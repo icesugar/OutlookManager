@@ -87,7 +87,7 @@ GRAPH_OAUTH_SCOPE = "https://graph.microsoft.com/Mail.Read offline_access"
 GRAPH_API_BASE_URL = "https://graph.microsoft.com/v1.0"
 COMMON_TOKEN_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
 DEFAULT_ACCOUNT_AUTH_METHOD = "imap"
-SUPPORTED_ACCOUNT_AUTH_METHODS = {"imap", "graph"}
+SUPPORTED_ACCOUNT_AUTH_METHODS = {"imap", "graph", "oauth2"}
 
 # IMAP服务器配置
 IMAP_SERVER = "outlook.live.com"
