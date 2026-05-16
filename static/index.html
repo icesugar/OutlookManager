@@ -4713,7 +4713,8 @@
 
         .auth-shell.auth-login-mode .auth-login-brand {
             display: flex;
-            width: min(100%, 520px);
+            width: fit-content;
+            max-width: min(100%, 520px);
             margin: 0 auto;
             align-items: center;
             justify-content: center;
@@ -4728,7 +4729,6 @@
         .auth-shell.auth-login-mode .auth-login-brand-copy {
             justify-items: start;
             text-align: left;
-            flex: 1;
             min-width: 0;
         }
 
@@ -5539,7 +5539,7 @@
                             <div class="form-group">
                                 <label class="form-label">批量账户信息</label>
                                 <p class="text-sm" style="color: #64748b; margin-bottom: 8px;">
-                                    <span id="batchFormatHint">每行格式：<code>邮箱----刷新令牌----客户端ID</code></span>
+                                    <span id="batchFormatHint">每行格式：<code>邮箱----刷新令牌----客户端ID</code>；也兼容 <code>邮箱----占位密码----刷新令牌----客户端ID</code> 和 <code>邮箱----密码----client_id----refresh_token</code>（Outlook_OA2）</span>
                                 </p>
                                 <!--
                                 <p class="text-sm" style="color: #64748b; margin-bottom: 12px;">
@@ -5547,10 +5547,10 @@
                                 </p>
                                 -->
                                 <textarea id="batchAccounts" class="form-input form-textarea" rows="12" placeholder="example1@outlook.com----refresh_token1----client_id1
-example2@outlook.com----refresh_token2----client_id2
-example3@outlook.com----refresh_token3----client_id3"></textarea>
+example2@outlook.com----placeholder_password----refresh_token2----client_id2
+example3@outlook.com----password3----client_id3----refresh_token3"></textarea>
                                 <p class="text-xs" style="color: #64748b; margin-top: 8px;">
-                                    提示：每行一个账户，使用四个连字符（`----`）分隔字段；Graph API 支持 <code>邮箱----密码----client_id----令牌</code>，IMAP 兼容旧格式 <code>邮箱----占位密码----刷新令牌----客户端ID</code>
+                                    提示：每行一个账户，使用四个连字符（`----`）分隔字段；Graph API 支持 <code>邮箱----密码----client_id----令牌</code>，IMAP 支持 <code>邮箱----刷新令牌----客户端ID</code>，也兼容旧格式 <code>邮箱----占位密码----刷新令牌----客户端ID</code> 和 Outlook_OA2 格式 <code>邮箱----密码----client_id----refresh_token</code>
                                 </p>
                             </div>
 
@@ -8771,8 +8771,54 @@ example3@live.com----password3----client_id3----token3`;
             }
 
             return `example1@outlook.com----refresh_token1----client_id1
-example2@hotmail.com----refresh_token2----client_id2
-example3@live.com----refresh_token3----client_id3`;
+example2@hotmail.com----placeholder_password----refresh_token2----client_id2
+example3@live.com----password3----client_id3----refresh_token3`;
+        }
+
+        function looksLikeClientId(value) {
+            const normalized = String(value || '').trim();
+            return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(normalized)
+                || /client[_-]?id/i.test(normalized);
+        }
+
+        function looksLikeRefreshToken(value) {
+            const normalized = String(value || '').trim();
+            return /refresh[_-]?token/i.test(normalized)
+                || normalized.startsWith('0.')
+                || normalized.startsWith('M.')
+                || normalized.startsWith('eyJ')
+                || normalized.includes('.')
+                || normalized.length >= 40;
+        }
+
+        function parseImapFourPartAccount(parts) {
+            const [email, _legacyPassword, third, fourth] = parts;
+            const thirdIsClientId = looksLikeClientId(third);
+            const fourthIsClientId = looksLikeClientId(fourth);
+            const thirdIsRefreshToken = looksLikeRefreshToken(third);
+            const fourthIsRefreshToken = looksLikeRefreshToken(fourth);
+
+            if (thirdIsClientId && fourthIsRefreshToken) {
+                return { email, refreshToken: fourth, clientId: third };
+            }
+
+            if (thirdIsRefreshToken && fourthIsClientId) {
+                return { email, refreshToken: third, clientId: fourth };
+            }
+
+            if (thirdIsClientId && !fourthIsClientId) {
+                return { email, refreshToken: fourth, clientId: third };
+            }
+
+            if (fourthIsClientId && !thirdIsClientId) {
+                return { email, refreshToken: third, clientId: fourth };
+            }
+
+            if (fourth.length > third.length) {
+                return { email, refreshToken: fourth, clientId: third };
+            }
+
+            return { email, refreshToken: third, clientId: fourth };
         }
 
         function parseBatchAccountLine(line, authMethod = 'imap') {
@@ -8793,8 +8839,7 @@ example3@live.com----refresh_token3----client_id3`;
                 return { email, refreshToken, clientId };
             }
             if (parts.length === 4) {
-                const [email, _legacyPassword, refreshToken, clientId] = parts;
-                return { email, refreshToken, clientId };
+                return parseImapFourPartAccount(parts);
             }
             return null;
         }
@@ -8842,7 +8887,7 @@ example3@live.com----refresh_token3----client_id3`;
             if (formatHint) {
                 formatHint.innerHTML = authMethod === 'graph'
                     ? '每行格式：<code>邮箱----密码----client_id----令牌</code>'
-                    : '每行格式：<code>邮箱----刷新令牌----客户端ID</code>';
+                    : '每行格式：<code>邮箱----刷新令牌----客户端ID</code>；也兼容 <code>邮箱----占位密码----刷新令牌----客户端ID</code> 和 <code>邮箱----密码----client_id----refresh_token</code>（Outlook_OA2）';
             }
 
             if (batchAccounts) {
@@ -9226,7 +9271,7 @@ example3@live.com----refresh_token3----client_id3`;
                         status: 'error',
                         message: authMethod === 'graph'
                             ? '格式错误: Graph API 应为 邮箱----密码----client_id----令牌'
-                            : '格式错误: 应为 邮箱----刷新令牌----客户端ID，或兼容旧格式 邮箱----占位密码----刷新令牌----客户端ID'
+                            : '格式错误: 应为 邮箱----刷新令牌----客户端ID，或兼容旧格式 邮箱----占位密码----刷新令牌----客户端ID，或 Outlook_OA2 格式 邮箱----密码----client_id----refresh_token'
                     });
                     continue;
                 }
