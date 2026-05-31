@@ -27,8 +27,8 @@ COPY main.py .
 COPY static/ ./static/
 COPY docker-entrypoint.sh .
 
-# 设置启动脚本权限
-RUN chmod +x docker-entrypoint.sh
+# 规范化 Windows CRLF，避免 Alpine 执行入口脚本时报 no such file
+RUN sed -i 's/\r$//' docker-entrypoint.sh && chmod +x docker-entrypoint.sh
 
 # 创建数据目录用于持久化存储
 RUN mkdir -p /app/data && chown 777 /app/data
