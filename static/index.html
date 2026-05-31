@@ -2969,6 +2969,44 @@
             background: rgba(59, 130, 246, 0.08);
         }
 
+        .account-credential-formats {
+            display: grid;
+            gap: 8px;
+            max-width: min(760px, 100%);
+        }
+
+        .account-credential-row {
+            display: grid;
+            grid-template-columns: 88px minmax(0, 1fr) auto;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 10px;
+            border: 1px solid rgba(148, 163, 184, 0.24);
+            border-radius: 8px;
+            background: #f8fafc;
+        }
+
+        .account-credential-label {
+            color: #334155;
+            font-size: 0.74rem;
+            font-weight: 800;
+            letter-spacing: 0.04em;
+        }
+
+        .account-credential-value {
+            color: #0f172a;
+            font-family: "IBM Plex Mono", Consolas, monospace;
+            font-size: 0.74rem;
+            line-height: 1.45;
+            word-break: break-all;
+        }
+
+        .account-credential-copy-btn {
+            min-height: 34px;
+            padding: 7px 10px;
+            white-space: nowrap;
+        }
+
         .pagination {
             gap: 14px;
             margin-top: 24px;
@@ -3817,6 +3855,15 @@
 
             .email-account-switcher {
                 max-width: none;
+            }
+
+            .account-credential-row {
+                grid-template-columns: 1fr;
+                align-items: start;
+            }
+
+            .account-credential-copy-btn {
+                justify-self: start;
             }
         }
 
@@ -6430,6 +6477,24 @@ example3@outlook.com----password3----client_id3----refresh_token3"></textarea>
                                     </div>
                                 </div>
                                 <span id="currentAccountEmail" class="hidden"></span>
+                                <div id="accountCredentialFormats" class="account-credential-formats hidden">
+                                    <div class="account-credential-row">
+                                        <span class="account-credential-label">Graph API</span>
+                                        <code id="graphAccountCredentialFormat" class="account-credential-value">-</code>
+                                        <button type="button" id="copyGraphCredentialFormatBtn" class="btn btn-secondary btn-sm account-credential-copy-btn" onclick="copyCurrentAccountCredentialFormat('graph')">
+                                            <span></span>
+                                            复制
+                                        </button>
+                                    </div>
+                                    <div class="account-credential-row">
+                                        <span class="account-credential-label">IMAP 旧格式</span>
+                                        <code id="imapLegacyAccountCredentialFormat" class="account-credential-value">-</code>
+                                        <button type="button" id="copyImapLegacyCredentialFormatBtn" class="btn btn-secondary btn-sm account-credential-copy-btn" onclick="copyCurrentAccountCredentialFormat('imap')">
+                                            <span></span>
+                                            复制
+                                        </button>
+                                    </div>
+                                </div>
                                 <p class="text-sm" style="color: #64748b;">最后更新：<span id="lastUpdateTime">-</span></p>
                             </div>
                             <div class="flex gap-2">
@@ -6864,6 +6929,8 @@ example3@outlook.com----password3----client_id3----refresh_token3"></textarea>
         let accountBindMenuOpen = false;
         let currentEmailTagKeys = [];
         let currentEmailMessageId = null;
+        let currentAccountCredentialFormats = null;
+        let accountCredentialFormatRequestId = 0;
         let authTurnstileToken = '';
         let authTurnstileWidgetId = null;
         let authTurnstileSiteKey = '';
@@ -8191,6 +8258,8 @@ example3@outlook.com----password3----client_id3----refresh_token3"></textarea>
             setButtonIcon(document.querySelector('#emailsPage .btn-secondary.btn-sm[onclick="clearFilters()"]'), 'clear');
             setButtonIcon(document.querySelector('.email-account-copy-btn'), 'copy');
             setButtonIcon(document.getElementById('accountBindMenuBtn'), 'tags');
+            setButtonIcon(document.getElementById('copyGraphCredentialFormatBtn'), 'copy');
+            setButtonIcon(document.getElementById('copyImapLegacyCredentialFormatBtn'), 'copy');
             updateAutoRefreshButton();
 
             const searchIcon = document.querySelector('#emailsPage .search-icon');
@@ -8364,6 +8433,7 @@ example3@outlook.com----password3----client_id3----refresh_token3"></textarea>
                 loadSiteSettings();
             } else if (pageName === 'emails') {
                 populateAccountSwitcher(currentAccount);
+                loadCurrentAccountCredentialFormats(currentAccount);
                 loadEmails();
             }
             syncAutoRefreshTimer();
@@ -9764,7 +9834,7 @@ example3@live.com----password3----client_id3----refresh_token3`;
                     pathTemplate: '/accounts/{email_id}/classification',
                     description: '修改某个邮箱账户的分类和标签。',
                     pathFields: [
-                        { key: 'email_id', label: '邮箱账户', kind: 'select', typeLabel: 'string', required: true, options: () => getApiDocsAccountChoices(), placeholder: '请选择邮箱账户', fallbackPlaceholder: 'example@outlook.com', hint: '优先从现有账户中选择，没有时可手动输入。' }
+                        { key: 'email_id', label: '邮箱账户', kind: 'select', typeLabel: 'string', required: true, allowCustomInput: true, options: () => getApiDocsAccountChoices(), placeholder: '输入或选择邮箱账户', fallbackPlaceholder: 'example@outlook.com', hint: '优先从现有账户中选择，没有时可手动输入过滤。' }
                     ],
                     queryFields: [],
                     bodyFields: [
@@ -9779,7 +9849,7 @@ example3@live.com----password3----client_id3----refresh_token3`;
                     description: '拉取指定邮箱的邮件列表，支持文件夹、分页和刷新控制。',
                     responseBoxId: 'emailsResponse',
                     pathFields: [
-                        { key: 'email_id', label: '邮箱账户', kind: 'select', typeLabel: 'string', required: true, options: () => getApiDocsAccountChoices(), placeholder: '请选择邮箱账户', fallbackPlaceholder: 'example@outlook.com', hint: '优先从现有账户中选择，没有时可手动输入。' }
+                        { key: 'email_id', label: '邮箱账户', kind: 'select', typeLabel: 'string', required: true, allowCustomInput: true, options: () => getApiDocsAccountChoices(), placeholder: '输入或选择邮箱账户', fallbackPlaceholder: 'example@outlook.com', hint: '优先从现有账户中选择，没有时可手动输入过滤。' }
                     ],
                     queryFields: [
                         { key: 'folder', label: '文件夹', kind: 'select', typeLabel: 'string', required: false, defaultValue: 'all', options: [{ value: 'all', label: '全部邮件 all' }, { value: 'inbox', label: '收件箱 inbox' }, { value: 'junk', label: '垃圾箱 junk' }], hint: '控制读取哪个文件夹。' },
@@ -9796,7 +9866,7 @@ example3@live.com----password3----client_id3----refresh_token3`;
                     description: '读取单封邮件详情。通常先通过邮件列表接口拿到 message_id。',
                     responseBoxId: 'emailDetailResponse',
                     pathFields: [
-                        { key: 'email_id', label: '邮箱账户', kind: 'select', typeLabel: 'string', required: true, options: () => getApiDocsAccountChoices(), placeholder: '请选择邮箱账户', fallbackPlaceholder: 'example@outlook.com' },
+                        { key: 'email_id', label: '邮箱账户', kind: 'select', typeLabel: 'string', required: true, allowCustomInput: true, options: () => getApiDocsAccountChoices(), placeholder: '输入或选择邮箱账户', fallbackPlaceholder: 'example@outlook.com' },
                         { key: 'message_id', label: '邮件 ID', kind: 'text', typeLabel: 'string', required: true, defaultValue: 'INBOX-1', placeholder: 'INBOX-1', hint: '格式通常是 {folder}-{id}，例如 INBOX-1。' }
                     ],
                     queryFields: [],
@@ -9808,7 +9878,7 @@ example3@live.com----password3----client_id3----refresh_token3`;
                     pathTemplate: '/emails/{email_id}/{message_id}/tags',
                     description: '批量更新单封邮件的标签。',
                     pathFields: [
-                        { key: 'email_id', label: '邮箱账户', kind: 'select', typeLabel: 'string', required: true, options: () => getApiDocsAccountChoices(), placeholder: '请选择邮箱账户', fallbackPlaceholder: 'example@outlook.com' },
+                        { key: 'email_id', label: '邮箱账户', kind: 'select', typeLabel: 'string', required: true, allowCustomInput: true, options: () => getApiDocsAccountChoices(), placeholder: '输入或选择邮箱账户', fallbackPlaceholder: 'example@outlook.com' },
                         { key: 'message_id', label: '邮件 ID', kind: 'text', typeLabel: 'string', required: true, defaultValue: 'INBOX-1', placeholder: 'INBOX-1', hint: '先从邮件列表响应中复制 message_id。' }
                     ],
                     queryFields: [],
@@ -9916,6 +9986,25 @@ example3@live.com----password3----client_id3----refresh_token3`;
                         </div>
                     `;
                 }
+            } else if (field.kind === 'select' && field.allowCustomInput && optionList.length) {
+                const value = currentValue == null ? '' : currentValue;
+                const dataListId = `apiDocs-${scope}-${field.key}-options`;
+                controlHtml = `
+                    <input
+                        list="${escapeHtml(dataListId)}"
+                        class="form-input"
+                        value="${escapeHtml(value)}"
+                        placeholder="${escapeHtml(field.placeholder || field.fallbackPlaceholder || '')}"
+                        autocomplete="off"
+                        oninput="updateApiDocsFieldValue('${scope}', '${escapeHtml(field.key)}', this.value)"
+                    >
+                    <datalist id="${escapeHtml(dataListId)}">
+                        ${optionList.map(option => {
+                            const optionValue = String(option.value ?? '');
+                            return `<option value="${escapeHtml(optionValue)}" label="${escapeHtml(option.help || option.label || optionValue)}"></option>`;
+                        }).join('')}
+                    </datalist>
+                `;
             } else if (field.kind === 'select' && optionList.length) {
                 controlHtml = `
                     <select class="form-input" onchange="updateApiDocsFieldValue('${scope}', '${escapeHtml(field.key)}', this.value)">
@@ -10383,6 +10472,80 @@ example3@live.com----password3----client_id3----refresh_token3`;
             }
 
             showNotification(`复制失败，请手动复制：${cleanEmail}`, 'error');
+        }
+
+        function setAccountCredentialFormatsDisabled(disabled) {
+            ['copyGraphCredentialFormatBtn', 'copyImapLegacyCredentialFormatBtn'].forEach(buttonId => {
+                const button = document.getElementById(buttonId);
+                if (button) button.disabled = !!disabled;
+            });
+        }
+
+        function renderAccountCredentialFormats(data = null, statusText = '-') {
+            const wrap = document.getElementById('accountCredentialFormats');
+            const graphValue = document.getElementById('graphAccountCredentialFormat');
+            const imapValue = document.getElementById('imapLegacyAccountCredentialFormat');
+            if (!wrap || !graphValue || !imapValue) return;
+
+            if (!currentAccount) {
+                wrap.classList.add('hidden');
+                graphValue.textContent = '-';
+                imapValue.textContent = '-';
+                setAccountCredentialFormatsDisabled(true);
+                return;
+            }
+
+            wrap.classList.remove('hidden');
+            graphValue.textContent = data && data.graph_format ? data.graph_format : statusText;
+            imapValue.textContent = data && data.imap_legacy_format ? data.imap_legacy_format : statusText;
+            setAccountCredentialFormatsDisabled(!data);
+        }
+
+        async function loadCurrentAccountCredentialFormats(accountId = currentAccount) {
+            const targetAccount = String(accountId || '').trim();
+            accountCredentialFormatRequestId += 1;
+            const requestId = accountCredentialFormatRequestId;
+
+            if (!targetAccount) {
+                currentAccountCredentialFormats = null;
+                renderAccountCredentialFormats(null, '-');
+                return null;
+            }
+
+            currentAccountCredentialFormats = null;
+            renderAccountCredentialFormats(null, '正在读取...');
+
+            try {
+                const data = await apiRequest(`/accounts/${encodeURIComponent(targetAccount)}/credential-formats`);
+                if (requestId !== accountCredentialFormatRequestId || targetAccount !== currentAccount) {
+                    return null;
+                }
+                currentAccountCredentialFormats = data;
+                renderAccountCredentialFormats(data);
+                return data;
+            } catch (error) {
+                if (requestId !== accountCredentialFormatRequestId) {
+                    return null;
+                }
+                renderAccountCredentialFormats(null, '读取失败');
+                showNotification('读取账户复制格式失败: ' + error.message, 'error');
+                return null;
+            }
+        }
+
+        async function copyCurrentAccountCredentialFormat(type) {
+            const formats = currentAccountCredentialFormats || await loadCurrentAccountCredentialFormats(currentAccount);
+            if (!formats) return;
+
+            const copyValue = type === 'graph' ? formats.graph_format : formats.imap_legacy_format;
+            const label = type === 'graph' ? 'Graph API 格式' : 'IMAP 旧格式';
+            const copied = await copyTextWithFallback(copyValue);
+            if (copied) {
+                showNotification(`${label}已复制到剪贴板`, 'success');
+                return;
+            }
+
+            showNotification('复制失败，请手动复制', 'error');
         }
 
         function downloadApiDocs() {
@@ -10980,6 +11143,8 @@ Authorization: Bearer om_your_api_key
             closeAccountBindMenu();
             resetEmailListState();
             currentAccount = null;
+            currentAccountCredentialFormats = null;
+            renderAccountCredentialFormats(null, '-');
             navigateAdmin('/accounts');
             syncAutoRefreshTimer();
         }

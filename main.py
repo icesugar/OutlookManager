@@ -33,7 +33,7 @@ from urllib.parse import quote, urlparse
 
 import httpx
 from email.header import decode_header
-from email.utils import parseaddr, parsedate_to_datetime
+from email.utils import getaddresses, parseaddr, parsedate_to_datetime
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
@@ -101,6 +101,7 @@ SOCKET_TIMEOUT = 15
 # 缓存配置
 CACHE_EXPIRE_TIME = 60  # 缓存过期时间（秒）
 CLASSIFICATION_KEY_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+EMAIL_ADDRESS_PATTERN = re.compile(r"[A-Z0-9._%+\-']+@[A-Z0-9.\-]+\.[A-Z]{2,}", re.IGNORECASE)
 BUILTIN_CLASSIFICATION_REMARK = "此分类此标签为适配MREGISTER开源项目"
 SUPPORTED_SETUP_MODES = {"mregister", "normal", "commercial"}
 BUILTIN_ACCOUNT_CLASSIFICATIONS: dict[str, dict[str, dict[str, Any]]] = {
@@ -207,6 +208,7 @@ class EmailItem(BaseModel):
     has_attachments: bool = False
     sender_initial: str = "?"
     sender_avatar_url: Optional[str] = None
+    to_email: Optional[str] = None
     tag_keys: List[str] = Field(default_factory=list)
     tag_details: List[ClassificationOption] = Field(default_factory=list)
 
@@ -222,6 +224,7 @@ class EmailItem(BaseModel):
                 "has_attachments": False,
                 "sender_initial": "A",
                 "sender_avatar_url": "https://www.gravatar.com/avatar/...",
+                "to_email": "example@outlook.com",
                 "tag_keys": ["registered_openai"],
                 "tag_details": [
                     {
@@ -287,6 +290,15 @@ class AccountInfo(BaseModel):
     health_score: int = 0
     health_summary: str = "未检查"
     health_checked_at: Optional[str] = None
+
+
+class AccountCredentialFormatsResponse(BaseModel):
+    """账户凭证复制格式"""
+    email_id: str
+    auth_method: str
+    client_id: str
+    graph_format: str
+    imap_legacy_format: str
 
 
 class AccountListResponse(BaseModel):
@@ -1011,6 +1023,63 @@ def extract_sender_email_address(from_value: str) -> str:
     """从发件人字段中提取邮箱地址"""
     _display_name, email_address = parseaddr(from_value or "")
     return (email_address or "").strip().lower()
+
+
+def normalize_email_address_for_match(value: str | None) -> str:
+    """标准化邮箱地址用于忽略大小写精确匹配"""
+    return str(value or "").strip().lower()
+
+
+def extract_recipient_email_addresses(recipient_value: str | None) -> list[str]:
+    """从收件人头部文本中提取可精确匹配的邮箱地址"""
+    raw_value = str(recipient_value or "").strip()
+    if not raw_value:
+        return []
+
+    parsed_addresses: list[str] = []
+    normalized_header = raw_value.replace(";", ",")
+    for _display_name, address in getaddresses([normalized_header]):
+        normalized = normalize_email_address_for_match(address)
+        if "@" in normalized:
+            parsed_addresses.append(normalized)
+
+    if not parsed_addresses:
+        parsed_addresses = [
+            normalize_email_address_for_match(match)
+            for match in EMAIL_ADDRESS_PATTERN.findall(raw_value)
+        ]
+
+    return list(dict.fromkeys(parsed_addresses))
+
+
+def email_matches_recipient(
+    email_obj: EmailItem | EmailDetailsResponse,
+    recipient_email: str | None,
+) -> bool:
+    """判断邮件收件人是否与目标邮箱忽略大小写精确相等"""
+    target_email = normalize_email_address_for_match(recipient_email)
+    if not target_email:
+        return False
+    return target_email in extract_recipient_email_addresses(getattr(email_obj, "to_email", None))
+
+
+def filter_email_list_response_by_recipient(
+    response: EmailListResponse,
+    recipient_email: str | None,
+) -> EmailListResponse:
+    """过滤公开邮件列表，避免同一邮箱账户中的别名邮件泄露"""
+    filtered_emails = [
+        email_item for email_item in response.emails
+        if email_matches_recipient(email_item, recipient_email)
+    ]
+    return EmailListResponse(
+        email_id=response.email_id,
+        folder_view=response.folder_view,
+        page=response.page,
+        page_size=response.page_size,
+        total_emails=len(filtered_emails),
+        emails=filtered_emails,
+    )
 
 
 def build_sender_avatar_url(from_value: str, size: int = 128) -> Optional[str]:
@@ -2690,7 +2759,8 @@ def graph_message_to_email_item(message: dict[str, Any], folder_key: str) -> Ema
         is_read=bool(message.get("isRead", False)),
         has_attachments=bool(message.get("hasAttachments", False)),
         sender_initial=sender_initial,
-        sender_avatar_url=build_sender_avatar_url(from_email)
+        sender_avatar_url=build_sender_avatar_url(from_email),
+        to_email=format_graph_recipients(message.get("toRecipients")) or None,
     )
 
 
@@ -2931,7 +3001,7 @@ async def list_graph_folder_emails(
     )
 
     params: dict[str, Any] = {
-        "$select": "id,subject,from,receivedDateTime,isRead,hasAttachments",
+        "$select": "id,subject,from,toRecipients,receivedDateTime,isRead,hasAttachments",
         "$orderby": "receivedDateTime DESC",
         "$top": top_override if top_override is not None else page_size,
     }
@@ -3105,7 +3175,7 @@ async def list_emails(credentials: AccountCredentials, folder: str, page: int, p
                     # 批量获取邮件头 - 优化获取字段
                     msg_id_sequence = b','.join(msg_ids_to_fetch)
                     # 只获取必要的头部信息，减少数据传输
-                    status, msg_data = imap_client.fetch(msg_id_sequence, '(FLAGS BODY.PEEK[HEADER.FIELDS (SUBJECT DATE FROM MESSAGE-ID)])')
+                    status, msg_data = imap_client.fetch(msg_id_sequence, '(FLAGS BODY.PEEK[HEADER.FIELDS (SUBJECT DATE FROM TO MESSAGE-ID)])')
 
                     if status != 'OK':
                         continue
@@ -3115,7 +3185,7 @@ async def list_emails(credentials: AccountCredentials, folder: str, page: int, p
                         header_data = msg_data[i][1]
                         
                         # 从返回的原始数据中解析出msg_id
-                        # e.g., b'1 (BODY[HEADER.FIELDS (SUBJECT DATE FROM)] {..}'
+                        # e.g., b'1 (BODY[HEADER.FIELDS (SUBJECT DATE FROM TO)] {..}'
                         match = re.match(rb'(\d+)\s+\(', msg_data[i][0])
                         if not match:
                             continue
@@ -3125,6 +3195,7 @@ async def list_emails(credentials: AccountCredentials, folder: str, page: int, p
                         
                         subject = decode_header_value(msg.get('Subject', '(No Subject)'))
                         from_email = decode_header_value(msg.get('From', '(Unknown Sender)'))
+                        to_email = decode_header_value(msg.get('To', ''))
                         date_str = msg.get('Date', '')
                         
                         try:
@@ -3153,7 +3224,8 @@ async def list_emails(credentials: AccountCredentials, folder: str, page: int, p
                             is_read=False,  # 简化处理，实际可通过IMAP flags判断
                             has_attachments=False,  # 简化处理，实际需要检查邮件结构
                             sender_initial=sender_initial,
-                            sender_avatar_url=build_sender_avatar_url(from_email)
+                            sender_avatar_url=build_sender_avatar_url(from_email),
+                            to_email=to_email or None,
                         )
                         email_items.append(email_item)
 
@@ -3908,14 +3980,18 @@ async def get_open_emails(
 ):
     require_public_share_access(request, email_id)
     credentials = await get_account_credentials(email_id)
-    return await list_emails(credentials, folder, page, page_size, refresh)
+    response = await list_emails(credentials, folder, page, page_size, refresh)
+    return filter_email_list_response_by_recipient(response, credentials.email)
 
 
 @app.get("/api/open/emails/{email_id}/{message_id}", response_model=EmailDetailsResponse)
 async def get_open_email_detail(email_id: str, message_id: str, request: Request):
     require_public_share_access(request, email_id)
     credentials = await get_account_credentials(email_id)
-    return await get_email_details(credentials, message_id)
+    details = await get_email_details(credentials, message_id)
+    if not email_matches_recipient(details, credentials.email):
+        raise HTTPException(status_code=404, detail="Email not found")
+    return details
 
 
 @app.get("/accounts", response_model=AccountListResponse)
@@ -4025,6 +4101,20 @@ async def run_accounts_health_check(request: Request):
 async def get_accounts_health_check_status(request: Request):
     require_authenticated(request, allow_api_key=True)
     return get_account_health_check_state()
+
+
+@app.get("/accounts/{email_id}/credential-formats", response_model=AccountCredentialFormatsResponse)
+async def get_account_credential_formats(email_id: str, request: Request):
+    """获取邮箱账户的常用复制格式"""
+    require_authenticated(request)
+    credentials = await get_account_credentials(email_id)
+    return AccountCredentialFormatsResponse(
+        email_id=str(credentials.email),
+        auth_method=normalize_account_auth_method(credentials.auth_method),
+        client_id=credentials.client_id,
+        graph_format=f"{credentials.email}----password----{credentials.client_id}----{credentials.refresh_token}",
+        imap_legacy_format=f"{credentials.email}----placeholder_password----{credentials.refresh_token}----{credentials.client_id}",
+    )
 
 
 @app.get("/emails/{email_id}", response_model=EmailListResponse)
