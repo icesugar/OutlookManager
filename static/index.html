@@ -2587,6 +2587,37 @@
             color: var(--ui-text-soft);
         }
 
+        .filter-group-toggle {
+            justify-content: flex-end;
+        }
+
+        .filter-checkbox-option {
+            min-height: 38px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 12px;
+            border: 1px solid var(--ui-border);
+            border-radius: 10px;
+            background: rgba(255, 255, 255, 0.9);
+            color: var(--ui-text);
+            font-size: 0.875rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: border-color 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
+        }
+
+        .filter-checkbox-option:hover {
+            border-color: rgba(59, 130, 246, 0.45);
+            box-shadow: 0 8px 18px rgba(15, 23, 42, 0.08);
+        }
+
+        .filter-checkbox-option input {
+            width: 16px;
+            height: 16px;
+            accent-color: #2563eb;
+        }
+
         .filter-group-range {
             flex: 0 0 0;
             min-width: 0;
@@ -2970,14 +3001,17 @@
         }
 
         .account-credential-formats {
-            display: grid;
+            display: flex;
+            justify-content: flex-end;
+            align-items: center;
+            flex-wrap: nowrap;
             gap: 8px;
-            max-width: min(760px, 100%);
+            min-width: 0;
         }
 
         .account-credential-row {
             display: grid;
-            grid-template-columns: 88px minmax(0, 1fr) auto;
+            grid-template-columns: 88px minmax(120px, 1fr) auto;
             align-items: center;
             gap: 10px;
             padding: 8px 10px;
@@ -2998,7 +3032,23 @@
             font-family: "IBM Plex Mono", Consolas, monospace;
             font-size: 0.74rem;
             line-height: 1.45;
-            word-break: break-all;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .account-header-inline-actions {
+            display: flex;
+            justify-content: flex-end;
+            align-items: center;
+            gap: 10px;
+            min-height: 58px;
+            margin: -2px 0 16px;
+            padding-right: 4px;
+        }
+
+        .account-header-inline-actions.hidden {
+            display: none;
         }
 
         .account-credential-copy-btn {
@@ -3858,12 +3908,20 @@
             }
 
             .account-credential-row {
-                grid-template-columns: 1fr;
-                align-items: start;
+                grid-template-columns: 78px minmax(0, 1fr) auto;
+                align-items: center;
+                gap: 8px;
+            }
+
+            .account-header-inline-actions {
+                overflow-x: auto;
+                padding-bottom: 2px;
             }
 
             .account-credential-copy-btn {
-                justify-self: start;
+                justify-self: end;
+                min-height: 32px;
+                padding: 6px 8px;
             }
         }
 
@@ -6477,24 +6535,6 @@ example3@outlook.com----password3----client_id3----refresh_token3"></textarea>
                                     </div>
                                 </div>
                                 <span id="currentAccountEmail" class="hidden"></span>
-                                <div id="accountCredentialFormats" class="account-credential-formats hidden">
-                                    <div class="account-credential-row">
-                                        <span class="account-credential-label">Graph API</span>
-                                        <code id="graphAccountCredentialFormat" class="account-credential-value">-</code>
-                                        <button type="button" id="copyGraphCredentialFormatBtn" class="btn btn-secondary btn-sm account-credential-copy-btn" onclick="copyCurrentAccountCredentialFormat('graph')">
-                                            <span></span>
-                                            复制
-                                        </button>
-                                    </div>
-                                    <div class="account-credential-row">
-                                        <span class="account-credential-label">IMAP 旧格式</span>
-                                        <code id="imapLegacyAccountCredentialFormat" class="account-credential-value">-</code>
-                                        <button type="button" id="copyImapLegacyCredentialFormatBtn" class="btn btn-secondary btn-sm account-credential-copy-btn" onclick="copyCurrentAccountCredentialFormat('imap')">
-                                            <span></span>
-                                            复制
-                                        </button>
-                                    </div>
-                                </div>
                                 <p class="text-sm" style="color: #64748b;">最后更新：<span id="lastUpdateTime">-</span></p>
                             </div>
                             <div class="flex gap-2">
@@ -6518,6 +6558,31 @@ example3@outlook.com----password3----client_id3----refresh_token3"></textarea>
                                     <span></span>
                                     返回账户
                                 </button>
+                            </div>
+                        </div>
+
+                        <div id="accountHeaderInlineActions" class="account-header-inline-actions hidden">
+                            <label class="filter-checkbox-option">
+                                <input type="checkbox" id="filterAliasEmailsToggle" checked onchange="toggleAliasEmailFilter(this.checked)">
+                                <span>过滤别名邮箱邮件</span>
+                            </label>
+                            <div id="accountCredentialFormats" class="account-credential-formats hidden">
+                                <div class="account-credential-row">
+                                    <span class="account-credential-label">Graph API</span>
+                                    <code id="graphAccountCredentialFormat" class="account-credential-value">-</code>
+                                    <button type="button" id="copyGraphCredentialFormatBtn" class="btn btn-secondary btn-sm account-credential-copy-btn" onclick="copyCurrentAccountCredentialFormat('graph')">
+                                        <span></span>
+                                        复制
+                                    </button>
+                                </div>
+                                <div class="account-credential-row">
+                                    <span class="account-credential-label">IMAP 旧格式</span>
+                                    <code id="imapLegacyAccountCredentialFormat" class="account-credential-value">-</code>
+                                    <button type="button" id="copyImapLegacyCredentialFormatBtn" class="btn btn-secondary btn-sm account-credential-copy-btn" onclick="copyCurrentAccountCredentialFormat('imap')">
+                                        <span></span>
+                                        复制
+                                    </button>
+                                </div>
                             </div>
                         </div>
 
@@ -6874,6 +6939,7 @@ example3@outlook.com----password3----client_id3----refresh_token3"></textarea>
         let currentAccount = null;
         let currentEmailFolder = 'all';
         let currentEmailPage = 1;
+        let filterAliasEmailsEnabled = true;
         const AUTO_REFRESH_INTERVAL_MS = 5000;
         const AUTO_REFRESH_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
         const ACCOUNTS_PAGE_SIZE_STORAGE_KEY = 'outlookmanager-accounts-page-size';
@@ -9855,7 +9921,8 @@ example3@live.com----password3----client_id3----refresh_token3`;
                         { key: 'folder', label: '文件夹', kind: 'select', typeLabel: 'string', required: false, defaultValue: 'all', options: [{ value: 'all', label: '全部邮件 all' }, { value: 'inbox', label: '收件箱 inbox' }, { value: 'junk', label: '垃圾箱 junk' }], hint: '控制读取哪个文件夹。' },
                         { key: 'page', label: '页码', kind: 'number', typeLabel: 'integer', required: false, defaultValue: 1, min: 1 },
                         { key: 'page_size', label: '每页数量', kind: 'number', typeLabel: 'integer', required: false, defaultValue: 20, min: 1, max: 500 },
-                        { key: 'refresh', label: '强制刷新', kind: 'boolean', typeLabel: 'boolean', required: false, defaultValue: false, hint: '开启后会跳过缓存重新拉取。' }
+                        { key: 'refresh', label: '强制刷新', kind: 'boolean', typeLabel: 'boolean', required: false, defaultValue: false, hint: '开启后会跳过缓存重新拉取。' },
+                        { key: 'filter_aliases', label: '过滤别名邮件', kind: 'boolean', typeLabel: 'boolean', required: false, defaultValue: false, hint: '开启后仅返回收件人匹配当前账户的邮件。' }
                     ],
                     bodyFields: []
                 },
@@ -10481,13 +10548,28 @@ example3@live.com----password3----client_id3----refresh_token3`;
             });
         }
 
+        function maskCredentialFormat(value) {
+            const text = String(value || '').trim();
+            if (!text) return '-';
+
+            const prefixLength = Math.min(14, Math.max(6, Math.floor(text.length * 0.18)));
+            const suffixLength = Math.min(12, Math.max(6, Math.floor(text.length * 0.14)));
+            if (text.length <= prefixLength + suffixLength + 3) {
+                return `${text.slice(0, 4)}***${text.slice(-4)}`;
+            }
+
+            return `${text.slice(0, prefixLength)}***${text.slice(-suffixLength)}`;
+        }
+
         function renderAccountCredentialFormats(data = null, statusText = '-') {
+            const actions = document.getElementById('accountHeaderInlineActions');
             const wrap = document.getElementById('accountCredentialFormats');
             const graphValue = document.getElementById('graphAccountCredentialFormat');
             const imapValue = document.getElementById('imapLegacyAccountCredentialFormat');
             if (!wrap || !graphValue || !imapValue) return;
 
             if (!currentAccount) {
+                if (actions) actions.classList.add('hidden');
                 wrap.classList.add('hidden');
                 graphValue.textContent = '-';
                 imapValue.textContent = '-';
@@ -10495,9 +10577,10 @@ example3@live.com----password3----client_id3----refresh_token3`;
                 return;
             }
 
+            if (actions) actions.classList.remove('hidden');
             wrap.classList.remove('hidden');
-            graphValue.textContent = data && data.graph_format ? data.graph_format : statusText;
-            imapValue.textContent = data && data.imap_legacy_format ? data.imap_legacy_format : statusText;
+            graphValue.textContent = data && data.graph_format ? maskCredentialFormat(data.graph_format) : statusText;
+            imapValue.textContent = data && data.imap_legacy_format ? maskCredentialFormat(data.imap_legacy_format) : statusText;
             setAccountCredentialFormatsDisabled(!data);
         }
 
@@ -11113,12 +11196,28 @@ Authorization: Bearer om_your_api_key
             }).join('');
         }
 
+        function setAliasEmailFilterEnabled(enabled) {
+            filterAliasEmailsEnabled = Boolean(enabled);
+            const checkbox = document.getElementById('filterAliasEmailsToggle');
+            if (checkbox) {
+                checkbox.checked = filterAliasEmailsEnabled;
+            }
+        }
+
+        function toggleAliasEmailFilter(checked) {
+            setAliasEmailFilterEnabled(checked);
+            currentEmailPage = 1;
+            resetEmailListState({ showLoading: true });
+            loadEmails();
+        }
+
         function switchCurrentAccount(emailId) {
             if (!emailId || emailId === currentAccount) return;
             closeAccountBindMenu();
             currentAccount = emailId;
             currentEmailFolder = 'all';
             currentEmailPage = 1;
+            setAliasEmailFilterEnabled(true);
             updateCurrentAccountHeader(emailId);
             resetEmailListState({ showLoading: true });
             clearFilters(false);
@@ -11131,6 +11230,7 @@ Authorization: Bearer om_your_api_key
             currentAccount = emailId;
             currentEmailFolder = 'all';
             currentEmailPage = 1;
+            setAliasEmailFilterEnabled(true);
             updateCurrentAccountHeader(emailId);
             populateAccountSwitcher(emailId);
             resetEmailListState({ showLoading: true });
@@ -11206,6 +11306,7 @@ Authorization: Bearer om_your_api_key
             const requestAccount = currentAccount;
             const requestFolder = currentEmailFolder;
             const requestPage = currentEmailPage;
+            const requestFilterAliases = filterAliasEmailsEnabled;
             const requestId = activeEmailRequestId + 1;
             const requestController = new AbortController();
             updateCurrentAccountHeader(currentAccount);
@@ -11229,14 +11330,16 @@ Authorization: Bearer om_your_api_key
                 const refreshParam = (forceRefresh || shouldProbeLatest) ? '&refresh=true' : '';
                 const pageToLoad = shouldProbeLatest ? 1 : requestPage;
                 const requestPageSize = shouldProbeLatest ? EMAIL_REFRESH_PROBE_SIZE : EMAIL_LIST_PAGE_SIZE;
-                const url = `/emails/${requestAccount}?folder=${requestFolder}&page=${pageToLoad}&page_size=${requestPageSize}${refreshParam}`;
+                const aliasFilterParam = `&filter_aliases=${requestFilterAliases ? 'true' : 'false'}`;
+                const url = `/emails/${requestAccount}?folder=${requestFolder}&page=${pageToLoad}&page_size=${requestPageSize}${refreshParam}${aliasFilterParam}`;
                 const data = await apiRequest(url, { signal: requestController.signal });
 
                 if (
                     requestId !== activeEmailRequestId ||
                     requestAccount !== currentAccount ||
                     requestFolder !== currentEmailFolder ||
-                    requestPage !== currentEmailPage
+                    requestPage !== currentEmailPage ||
+                    requestFilterAliases !== filterAliasEmailsEnabled
                 ) {
                     return;
                 }
@@ -12343,6 +12446,7 @@ Authorization: Bearer om_your_api_key
                 const emailId = decodeURIComponent(relativePath.replace('/emails/', ''));
                 if (emailId) {
                     if (emailId !== currentAccount) {
+                        setAliasEmailFilterEnabled(true);
                         resetEmailListState({ showLoading: true });
                     }
                     currentAccount = emailId;

@@ -1067,7 +1067,7 @@ def filter_email_list_response_by_recipient(
     response: EmailListResponse,
     recipient_email: str | None,
 ) -> EmailListResponse:
-    """过滤公开邮件列表，避免同一邮箱账户中的别名邮件泄露"""
+    """按目标收件人过滤邮件列表，用于排除同一账户中的别名邮件"""
     filtered_emails = [
         email_item for email_item in response.emails
         if email_matches_recipient(email_item, recipient_email)
@@ -4124,12 +4124,16 @@ async def get_emails(
     folder: str = Query("all", regex="^(inbox|junk|all)$"),
     page: int = Query(1, ge=1),
     page_size: int = Query(100, ge=1, le=500),
-    refresh: bool = Query(False, description="强制刷新缓存")
+    refresh: bool = Query(False, description="强制刷新缓存"),
+    filter_aliases: bool = Query(False, description="仅返回收件人匹配当前账户的邮件")
 ):
     """获取邮件列表"""
     require_authenticated(request, allow_api_key=True)
     credentials = await get_account_credentials(email_id)
-    return await list_emails(credentials, folder, page, page_size, refresh)
+    response = await list_emails(credentials, folder, page, page_size, refresh)
+    if filter_aliases:
+        return filter_email_list_response_by_recipient(response, credentials.email)
+    return response
 
 
 @app.get("/emails/{email_id}/dual-view")
