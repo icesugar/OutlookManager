@@ -2831,6 +2831,114 @@
             min-width: 0;
         }
 
+        .all-email-search-container {
+            align-items: center;
+        }
+
+        #allEmailsPage .all-email-search-container .search-icon {
+            position: static;
+            left: auto;
+            top: auto;
+            transform: none;
+            flex: 0 0 38px;
+        }
+
+        #allEmailsPage .all-email-search-container .search-input {
+            height: 40px;
+            min-width: 0;
+            padding: 0;
+        }
+
+        .all-email-filter-grid {
+            grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr) auto;
+            align-items: flex-end;
+        }
+
+        .all-email-sync-toolbar {
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        #allEmailsPage .all-email-filter-grid .filter-group {
+            min-width: 260px;
+            flex-direction: row;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+        }
+
+        #allEmailsPage .all-email-filter-grid .filter-label {
+            flex: 0 0 auto;
+            line-height: 38px;
+        }
+
+        #allEmailsPage .all-email-filter-grid .filter-date-input {
+            width: 136px;
+            min-width: 136px;
+        }
+
+        #allEmailsPage .all-email-filter-grid .filter-actions {
+            width: auto;
+            min-width: 268px;
+            flex: none;
+            gap: 10px;
+            justify-content: flex-end;
+            margin-inline: 0;
+        }
+
+        #allEmailsPage .all-email-filter-grid .filter-actions .btn {
+            width: auto;
+            min-width: 112px;
+            white-space: nowrap;
+            line-height: 1;
+        }
+
+        .all-email-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px 14px;
+            color: #64748b;
+            -webkit-line-clamp: unset;
+            -webkit-box-orient: unset;
+            overflow: visible;
+        }
+
+        .all-email-meta span {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            min-width: 0;
+        }
+
+        .all-email-meta strong {
+            color: #334155;
+            font-weight: 600;
+            word-break: break-all;
+        }
+
+        .mailbox-color-badge {
+            display: inline-flex;
+            align-items: center;
+            max-width: 100%;
+            padding: 3px 9px;
+            border-radius: 999px;
+            border: 1px solid var(--mailbox-border, rgba(37, 99, 235, 0.18));
+            background: var(--mailbox-bg, rgba(37, 99, 235, 0.08));
+            color: var(--mailbox-text, #1d4ed8);
+            font-weight: 700;
+            line-height: 1.35;
+            word-break: break-all;
+        }
+
+        .all-email-account-tags {
+            margin-top: 10px;
+            gap: 6px;
+        }
+
+        .all-email-account-tags .account-tag {
+            padding: 3px 9px;
+        }
+
         .email-detail-hero {
             display: flex;
             align-items: center;
@@ -3593,6 +3701,15 @@
             #emailsPage .filter-actions {
                 width: 100%;
             }
+
+            .all-email-filter-grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+
+            #allEmailsPage .all-email-filter-grid .filter-actions {
+                grid-column: 1 / -1;
+                justify-content: flex-end;
+            }
         }
 
         @media (max-width: 768px) {
@@ -3771,6 +3888,27 @@
                 width: 100%;
                 min-width: 0;
                 flex-basis: 100%;
+            }
+
+            .all-email-filter-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .all-email-filter-grid .filter-actions {
+                width: 100%;
+                min-width: 0;
+                justify-content: flex-start;
+            }
+
+            #allEmailsPage .all-email-filter-grid .filter-group {
+                width: 100%;
+                min-width: 0;
+                justify-content: flex-start;
+            }
+
+            #allEmailsPage .all-email-filter-grid .filter-date-input {
+                width: min(180px, 100%);
+                min-width: 0;
             }
 
             .date-range-inputs {
@@ -5340,6 +5478,10 @@
                     <span class="icon"></span>
                     <span class="nav-item-text">邮箱账户管理</span>
                 </button>
+                <button id="allEmailsNav" class="nav-item" type="button" data-page="allEmails" onclick="showPage('allEmails', this)">
+                    <span class="icon"></span>
+                    <span class="nav-item-text">全部邮件</span>
+                </button>
                 <button class="nav-item" type="button" data-page="addAccount" onclick="showPage('addAccount', this)">
                     <span class="icon"></span>
                     <span class="nav-item-text">添加账户</span>
@@ -5516,6 +5658,85 @@
                                 下一页                                <span></span>
                             </button>
                         </div>
+                    </div>
+                </div>
+
+                <!-- 全部邮件页面 -->
+                <div id="allEmailsPage" class="page hidden">
+                    <div class="card">
+                        <div class="flex items-center justify-between mb-4">
+                            <div>
+                                <h3 class="font-semibold">全部邮件</h3>
+                                <p class="text-sm" style="color: #64748b;">跨邮箱账户按收件时间倒序查看最近邮件</p>
+                            </div>
+                            <div class="flex gap-2 all-email-sync-toolbar">
+                                <button class="btn btn-secondary btn-sm" type="button" onclick="refreshAllEmails()" id="allEmailsRefreshBtn">
+                                    <span></span>
+                                    刷新邮件到 SQLite
+                                </button>
+                                <button class="btn btn-secondary btn-sm" type="button" onclick="exportAllEmails()">
+                                    <span></span>
+                                    导出
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="stats-container">
+                            <div class="stat-item">
+                                <div class="stat-value" id="allTotalEmailCount">0</div>
+                                <div class="stat-label">匹配邮件</div>
+                            </div>
+                            <div class="stat-item">
+                                <div class="stat-value" id="allPageEmailCount">0</div>
+                                <div class="stat-label">当前页</div>
+                            </div>
+                            <div class="stat-item">
+                                <div class="stat-value" id="allUnreadEmailCount">0</div>
+                                <div class="stat-label">当前页未读</div>
+                            </div>
+                            <div class="stat-item">
+                                <div class="stat-value" id="allFailedAccountCount">0</div>
+                                <div class="stat-label">读取失败账户</div>
+                            </div>
+                        </div>
+
+                        <div class="search-container all-email-search-container">
+                            <span class="search-icon" id="allEmailSearchIcon"></span>
+                            <input type="text" class="search-input" id="allEmailSearchInput" placeholder="搜索主题、发件人、收件人或收件邮箱..." onkeypress="handleAllEmailSearchKeyPress(event)">
+                        </div>
+
+                        <div class="filter-container all-email-filter-grid">
+                            <div class="filter-group">
+                                <label class="filter-label">开始时间</label>
+                                <input type="date" class="filter-select filter-date-input" id="allEmailDateFrom">
+                            </div>
+                            <div class="filter-group">
+                                <label class="filter-label">结束时间</label>
+                                <input type="date" class="filter-select filter-date-input" id="allEmailDateTo">
+                            </div>
+                            <div class="filter-actions">
+                                <button class="btn btn-primary btn-sm" type="button" onclick="searchAllEmails()">
+                                    <span></span>
+                                    搜索
+                                </button>
+                                <button class="btn btn-secondary btn-sm" type="button" onclick="clearAllEmailFilters()">
+                                    <span></span>
+                                    清除筛选
+                                </button>
+                            </div>
+                        </div>
+
+                        <div id="allEmailsSyncStatus" class="public-share-status hidden" style="margin-bottom: 14px;"></div>
+                        <div id="allEmailsWarning" class="public-share-status hidden"></div>
+
+                        <div id="allEmailsList" class="email-list">
+                            <div class="loading">
+                                <div class="loading-spinner"></div>
+                                正在加载邮件...
+                            </div>
+                        </div>
+
+                        <div id="allEmailsPagination" class="pagination hidden"></div>
                     </div>
                 </div>
 
@@ -6422,6 +6643,33 @@ example3@outlook.com----password3----client_id3----refresh_token3"></textarea>
                             </div>
 
                             <div class="api-key-panel">
+                                <h4 style="margin: 0 0 16px; color: #0f172a;">全部邮件同步</h4>
+                                <div class="form-group">
+                                    <label class="public-share-inline">
+                                        <input type="checkbox" id="siteSettingsAllEmailAutoSyncEnabled">
+                                        <span>启用服务端定时同步到 SQLite</span>
+                                    </label>
+                                    <div class="public-share-help">默认开启。服务端按间隔自动同步最新邮件；如果已有同步任务在运行，本轮会复用当前任务状态，不重复启动。</div>
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label" for="siteSettingsAllEmailSyncConcurrency">同步线程数</label>
+                                    <input type="number" id="siteSettingsAllEmailSyncConcurrency" class="form-input" min="1" max="50" step="1" value="5" inputmode="numeric">
+                                    <div class="public-share-help">手动同步和定时同步都会使用这个线程数。建议从 5 开始，账号多或远端限流明显时调低。</div>
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label" for="siteSettingsAllEmailAutoSyncIntervalMinutes">定时同步间隔（分钟）</label>
+                                    <input type="number" id="siteSettingsAllEmailAutoSyncIntervalMinutes" class="form-input" min="1" max="1440" step="1" value="10" inputmode="numeric">
+                                    <div class="public-share-help">默认 10 分钟。设置保存后，服务端调度器会在下一轮读取新配置。</div>
+                                </div>
+                                <div class="api-docs-auth-box">
+                                    <p class="api-description" style="margin-bottom: 10px;">手动触发说明</p>
+                                    <p class="text-sm" style="color: #475569; line-height: 1.7;">
+                                        “全部邮件”页面只保留手动触发按钮，不再单独配置线程数。手动触发时如果后台任务正在运行，会直接展示当前同步进度。
+                                    </p>
+                                </div>
+                            </div>
+
+                            <div class="api-key-panel">
                                 <h4 style="margin: 0 0 16px; color: #0f172a;">公开分享域名</h4>
                                 <div class="form-group">
                                     <label class="public-share-inline">
@@ -6939,6 +7187,15 @@ example3@outlook.com----password3----client_id3----refresh_token3"></textarea>
         let currentAccount = null;
         let currentEmailFolder = 'all';
         let currentEmailPage = 1;
+        let currentAllEmailsPage = 1;
+        let allEmailsPageSize = 50;
+        let allAccountEmails = [];
+        let allEmailsTotal = 0;
+        let allEmailsFailedAccounts = [];
+        let allEmailsRefreshTimer = null;
+        let allEmailsSyncStatusTimer = null;
+        let isRefreshingAllEmailsToSqlite = false;
+        let allEmailsActiveSyncTaskId = null;
         let filterAliasEmailsEnabled = true;
         const AUTO_REFRESH_INTERVAL_MS = 5000;
         const AUTO_REFRESH_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
@@ -6949,8 +7206,11 @@ example3@outlook.com----password3----client_id3----refresh_token3"></textarea>
         let autoRefreshInterval = null;
         let lastMouseActivityAt = Date.now();
         let isLoadingEmails = false;
+        let isLoadingAllEmails = false;
         let activeEmailRequestController = null;
         let activeEmailRequestId = 0;
+        let activeAllEmailRequestController = null;
+        let activeAllEmailRequestId = 0;
         let accounts = [];
         
         // 账户管理分页相关变量
@@ -6995,6 +7255,7 @@ example3@outlook.com----password3----client_id3----refresh_token3"></textarea>
         let accountBindMenuOpen = false;
         let currentEmailTagKeys = [];
         let currentEmailMessageId = null;
+        let currentEmailDetailAccount = null;
         let currentAccountCredentialFormats = null;
         let accountCredentialFormatRequestId = 0;
         let authTurnstileToken = '';
@@ -8250,11 +8511,11 @@ example3@outlook.com----password3----client_id3----refresh_token3"></textarea>
 
         function decorateStaticUi() {
             const navButtons = document.querySelectorAll('.sidebar .nav-item[data-page]');
-            ['accounts', 'plus', 'batch', 'classification', 'key', 'api', 'settings', 'mail'].forEach((name, index) => {
+            ['accounts', 'mail', 'plus', 'batch', 'classification', 'key', 'api', 'settings', 'mail'].forEach((name, index) => {
                 setButtonIcon(navButtons[index], name, true);
             });
 
-            const navLabels = ['邮箱账户管理', '添加账户', '批量添加', '分类编辑', 'API 密钥', 'API 文档', '设置', '邮件列表'];
+            const navLabels = ['邮箱账户管理', '全部邮件', '添加账户', '批量添加', '分类编辑', 'API 密钥', 'API 文档', '设置', '邮件列表'];
             navButtons.forEach((button, index) => {
                 const label = navLabels[index];
                 if (!label) return;
@@ -8285,6 +8546,15 @@ example3@outlook.com----password3----client_id3----refresh_token3"></textarea>
             setButtonIcon(document.getElementById('nextPageBtn'), 'arrow-right');
             updateAccountsPageSizeOptionState();
             renderAccountsSelectionState();
+
+            setButtonIcon(document.getElementById('allEmailsRefreshBtn'), 'refresh');
+            setButtonIcon(document.querySelector('#allEmailsPage .btn-secondary.btn-sm[onclick="exportAllEmails()"]'), 'export');
+            setButtonIcon(document.querySelector('#allEmailsPage .btn-primary.btn-sm[onclick="searchAllEmails()"]'), 'search');
+            setButtonIcon(document.querySelector('#allEmailsPage .btn-secondary.btn-sm[onclick="clearAllEmailFilters()"]'), 'clear');
+            const allEmailSearchIcon = document.getElementById('allEmailSearchIcon');
+            if (allEmailSearchIcon) {
+                allEmailSearchIcon.innerHTML = icon('search');
+            }
 
             setButtonIcon(document.querySelector('#addAccountPage .btn-secondary.btn-sm[onclick="showPage(\'accounts\')"]'), 'arrow-left');
             setButtonIcon(document.getElementById('addAccountBtn'), 'plus');
@@ -8452,6 +8722,7 @@ example3@outlook.com----password3----client_id3----refresh_token3"></textarea>
 
             const pageRoutes = {
                 accounts: '/accounts',
+                allEmails: '/all-emails',
                 addAccount: '/add-account',
                 batchAdd: '/batch-add',
                 classifications: '/classifications',
@@ -8469,6 +8740,7 @@ example3@outlook.com----password3----client_id3----refresh_token3"></textarea>
 
             const titles = {
                 accounts: '邮箱账户管理',
+                allEmails: '全部邮件',
                 addAccount: '添加邮箱账户',
                 batchAdd: '批量添加账户',
                 classifications: '分类编辑',
@@ -8479,9 +8751,16 @@ example3@outlook.com----password3----client_id3----refresh_token3"></textarea>
             };
             document.getElementById('pageTitle').textContent = titles[pageName] || '';
 
+            if (pageName !== 'allEmails') {
+                stopAllEmailSyncStatusPolling();
+            }
+
             if (pageName === 'accounts') {
                 loadClassifications().catch(error => console.warn('Unable to load classifications', error));
                 loadAccounts();
+            } else if (pageName === 'allEmails') {
+                loadAllEmails();
+                loadAllEmailSqliteRefreshStatus({ notifyOnComplete: false });
             } else if (pageName === 'addAccount') {
                 clearAddAccountForm();
                 loadClassifications().catch(error => console.warn('Unable to load classifications', error));
@@ -8715,7 +8994,9 @@ example3@outlook.com----password3----client_id3----refresh_token3"></textarea>
 
                 return await response.json();
             } catch (error) {
-                console.error('API request failed:', error);
+                if (error.name !== 'AbortError') {
+                    console.error('API request failed:', error);
+                }
                 throw error;
             }
         }
@@ -10951,6 +11232,12 @@ Authorization: Bearer om_your_api_key
             const turnstileConfigured = !!(config.turnstile_site_key && config.turnstile_secret_key);
             const shareDomainTurnstileConfigured = !!(config.share_domain_turnstile_site_key && config.share_domain_turnstile_secret_key);
             const shareDomainTurnstileEnabled = shareEnabled && !!config.share_domain_turnstile_enabled && shareDomainTurnstileConfigured;
+            const allEmailAutoSyncEnabled = config.all_email_sqlite_auto_sync_enabled !== false;
+            const allEmailSyncConcurrency = Number(config.all_email_sqlite_sync_concurrency || 5);
+            const allEmailSyncInterval = Number(config.all_email_sqlite_auto_sync_interval_minutes || 10);
+            const allEmailSyncText = allEmailAutoSyncEnabled
+                ? `已开启，间隔 ${allEmailSyncInterval} 分钟，线程数 ${allEmailSyncConcurrency}`
+                : `已关闭，手动同步线程数 ${allEmailSyncConcurrency}`;
             const turnstileScopes = [
                 config.turnstile_enabled_for_admin_login ? '管理员登录页' : '',
                 config.turnstile_enabled_for_public_access ? '公开页面密码验证' : ''
@@ -10967,6 +11254,7 @@ Authorization: Bearer om_your_api_key
                 <strong>分享域名：</strong>${escapeHtml(shareText)}<br>
                 <strong>Turnstile：</strong>${escapeHtml(turnstileText)}<br>
                 <strong>公开域名独立 Turnstile：</strong>${escapeHtml(shareTurnstileText)}<br>
+                <strong>全部邮件同步：</strong>${escapeHtml(allEmailSyncText)}<br>
                 <strong>说明：</strong>${escapeHtml(summary)}
             `;
         }
@@ -11016,6 +11304,9 @@ Authorization: Bearer om_your_api_key
                 document.getElementById('siteSettingsTurnstileSecretKey').value = config.turnstile_secret_key || '';
                 document.getElementById('siteSettingsTurnstileAdminEnabled').checked = !!config.turnstile_enabled_for_admin_login;
                 document.getElementById('siteSettingsTurnstilePublicEnabled').checked = !!config.turnstile_enabled_for_public_access;
+                document.getElementById('siteSettingsAllEmailAutoSyncEnabled').checked = config.all_email_sqlite_auto_sync_enabled !== false;
+                document.getElementById('siteSettingsAllEmailSyncConcurrency').value = String(config.all_email_sqlite_sync_concurrency || 5);
+                document.getElementById('siteSettingsAllEmailAutoSyncIntervalMinutes').value = String(config.all_email_sqlite_auto_sync_interval_minutes || 10);
                 toggleShareDomainSettings();
                 renderSiteSettingsStatus(config);
                 if (showReloadMessage) {
@@ -11043,6 +11334,9 @@ Authorization: Bearer om_your_api_key
             const turnstileSecretKey = document.getElementById('siteSettingsTurnstileSecretKey').value.trim();
             const turnstileAdminEnabled = document.getElementById('siteSettingsTurnstileAdminEnabled').checked;
             const turnstilePublicEnabled = document.getElementById('siteSettingsTurnstilePublicEnabled').checked;
+            const allEmailAutoSyncEnabled = document.getElementById('siteSettingsAllEmailAutoSyncEnabled').checked;
+            const allEmailSyncConcurrency = Number.parseInt(document.getElementById('siteSettingsAllEmailSyncConcurrency').value, 10);
+            const allEmailAutoSyncIntervalMinutes = Number.parseInt(document.getElementById('siteSettingsAllEmailAutoSyncIntervalMinutes').value, 10);
             const previousAdminPath = getAdminBasePath();
 
             if (!homeTitle) {
@@ -11073,6 +11367,14 @@ Authorization: Bearer om_your_api_key
                 showNotification('启用 Turnstile 前请先完整填写 Site Key 和 Secret Key', 'warning');
                 return;
             }
+            if (!Number.isInteger(allEmailSyncConcurrency) || allEmailSyncConcurrency < 1 || allEmailSyncConcurrency > 50) {
+                showNotification('全部邮件同步线程数需为 1 到 50 的整数', 'warning');
+                return;
+            }
+            if (!Number.isInteger(allEmailAutoSyncIntervalMinutes) || allEmailAutoSyncIntervalMinutes < 1 || allEmailAutoSyncIntervalMinutes > 1440) {
+                showNotification('全部邮件定时同步间隔需为 1 到 1440 分钟的整数', 'warning');
+                return;
+            }
 
             saveBtn.disabled = true;
             saveBtn.innerHTML = buttonLabel('loading', '保存中...', 'spinning');
@@ -11092,7 +11394,10 @@ Authorization: Bearer om_your_api_key
                         turnstile_site_key: turnstileSiteKey,
                         turnstile_secret_key: turnstileSecretKey,
                         turnstile_enabled_for_admin_login: turnstileAdminEnabled,
-                        turnstile_enabled_for_public_access: shareDomainTurnstileEnabled ? false : turnstilePublicEnabled
+                        turnstile_enabled_for_public_access: shareDomainTurnstileEnabled ? false : turnstilePublicEnabled,
+                        all_email_sqlite_auto_sync_enabled: allEmailAutoSyncEnabled,
+                        all_email_sqlite_sync_concurrency: allEmailSyncConcurrency,
+                        all_email_sqlite_auto_sync_interval_minutes: allEmailAutoSyncIntervalMinutes
                     })
                 });
 
@@ -11108,8 +11413,11 @@ Authorization: Bearer om_your_api_key
                 document.getElementById('siteSettingsTurnstileSecretKey').value = config.turnstile_secret_key || '';
                 document.getElementById('siteSettingsTurnstileAdminEnabled').checked = !!config.turnstile_enabled_for_admin_login;
                 document.getElementById('siteSettingsTurnstilePublicEnabled').checked = !!config.turnstile_enabled_for_public_access;
+                document.getElementById('siteSettingsAllEmailAutoSyncEnabled').checked = config.all_email_sqlite_auto_sync_enabled !== false;
+                document.getElementById('siteSettingsAllEmailSyncConcurrency').value = String(config.all_email_sqlite_sync_concurrency || 5);
+                document.getElementById('siteSettingsAllEmailAutoSyncIntervalMinutes').value = String(config.all_email_sqlite_auto_sync_interval_minutes || 10);
                 toggleShareDomainSettings();
-                renderSiteSettingsStatus(config, '设置已保存，主页介绍、后台入口、公开分享域名和 Turnstile 配置都已更新。');
+                renderSiteSettingsStatus(config, '设置已保存，主页介绍、后台入口、公开分享域名、Turnstile 和全部邮件同步配置都已更新。');
                 showNotification('站点设置已保存', 'success');
 
                 if (currentAdminLoginPath !== previousAdminPath) {
@@ -11295,6 +11603,469 @@ Authorization: Bearer om_your_api_key
                     ? '<div class="loading"><div class="loading-spinner"></div>正在加载邮件...</div>'
                     : '<div class="text-center" style="padding: 40px; color: #64748b;">没有找到匹配的邮件</div>';
             }
+        }
+
+        function abortActiveAllEmailRequest() {
+            if (activeAllEmailRequestController) {
+                activeAllEmailRequestController.abort();
+                activeAllEmailRequestController = null;
+            }
+        }
+
+        function resetAllEmailListState(showLoading = false) {
+            abortActiveAllEmailRequest();
+            stopAllEmailAutoRefresh();
+            activeAllEmailRequestId += 1;
+            isLoadingAllEmails = false;
+            allAccountEmails = [];
+            allEmailsTotal = 0;
+            allEmailsFailedAccounts = [];
+            updateAllEmailStats(0, [], []);
+            updateAllEmailsPagination(0);
+            renderAllEmailsWarning([]);
+
+            const list = document.getElementById('allEmailsList');
+            if (list) {
+                list.innerHTML = showLoading
+                    ? '<div class="loading"><div class="loading-spinner"></div>正在加载邮件...</div>'
+                    : '<div class="text-center" style="padding: 40px; color: #64748b;">没有找到匹配的邮件</div>';
+            }
+        }
+
+        function isAllEmailsPageVisible() {
+            const page = document.getElementById('allEmailsPage');
+            return !!page && !page.classList.contains('hidden');
+        }
+
+        function stopAllEmailAutoRefresh() {
+            if (allEmailsRefreshTimer) {
+                clearTimeout(allEmailsRefreshTimer);
+                allEmailsRefreshTimer = null;
+            }
+        }
+
+        function scheduleAllEmailAutoRefresh(delayMs = 2500) {
+            stopAllEmailAutoRefresh();
+            allEmailsRefreshTimer = window.setTimeout(() => {
+                allEmailsRefreshTimer = null;
+                if (!autoRefreshEnabled || !isAllEmailsPageVisible()) {
+                    return;
+                }
+                loadAllEmails(false, { silent: true });
+            }, delayMs);
+        }
+
+        function getAllEmailFilters() {
+            return {
+                search: document.getElementById('allEmailSearchInput').value.trim(),
+                dateFrom: document.getElementById('allEmailDateFrom').value,
+                dateTo: document.getElementById('allEmailDateTo').value
+            };
+        }
+
+        function buildAllEmailsUrl(forceRefresh = false) {
+            const filters = getAllEmailFilters();
+            const params = new URLSearchParams({
+                page: String(currentAllEmailsPage),
+                page_size: String(allEmailsPageSize)
+            });
+
+            if (filters.search) params.append('search', filters.search);
+            if (filters.dateFrom) params.append('date_from', filters.dateFrom);
+            if (filters.dateTo) params.append('date_to', filters.dateTo);
+            return `/all-emails?${params.toString()}`;
+        }
+
+        function setAllEmailRefreshButtonState(isBusy = false, label = '刷新邮件到 SQLite') {
+            const refreshBtn = document.getElementById('allEmailsRefreshBtn');
+            if (!refreshBtn) return;
+            refreshBtn.disabled = isBusy;
+            refreshBtn.innerHTML = isBusy
+                ? buttonLabel('loading', label, 'spinning')
+                : buttonLabel('refresh', label);
+        }
+
+        function stopAllEmailSyncStatusPolling() {
+            if (allEmailsSyncStatusTimer) {
+                clearTimeout(allEmailsSyncStatusTimer);
+                allEmailsSyncStatusTimer = null;
+            }
+        }
+
+        function scheduleAllEmailSyncStatusPolling(delayMs = 1200) {
+            stopAllEmailSyncStatusPolling();
+            allEmailsSyncStatusTimer = window.setTimeout(() => {
+                allEmailsSyncStatusTimer = null;
+                loadAllEmailSqliteRefreshStatus();
+            }, delayMs);
+        }
+
+        function renderAllEmailSyncStatus(data) {
+            const status = document.getElementById('allEmailsSyncStatus');
+            if (!status) return;
+            if (isRefreshingAllEmailsToSqlite) return;
+
+            const cacheAge = Number.isFinite(data.cache_age_seconds) ? Number(data.cache_age_seconds) : null;
+            const cacheUpdatedAt = data.cache_updated_at || '';
+            const hasEmails = Array.isArray(data.emails) && data.emails.length > 0;
+
+            if (!cacheUpdatedAt && !hasEmails) {
+                status.classList.remove('hidden');
+                status.textContent = 'SQLite 中暂无邮件，请点击“刷新邮件到 SQLite”同步最新邮件';
+                return;
+            }
+
+            status.classList.remove('hidden');
+            const parts = [];
+            if (cacheUpdatedAt) {
+                parts.push(`SQLite 最近同步：${formatFullEmailDate(cacheUpdatedAt)}`);
+            } else {
+                parts.push('SQLite 本地索引已就绪');
+            }
+            if (cacheAge !== null) {
+                parts.push(`${cacheAge} 秒前`);
+            }
+            if (Array.isArray(data.failed_accounts) && data.failed_accounts.length) {
+                parts.push(`读取失败 ${data.failed_accounts.length} 个账户`);
+            }
+            status.textContent = parts.join(' · ');
+        }
+
+        function renderAllEmailRefreshJobStatus(jobStatus) {
+            const status = document.getElementById('allEmailsSyncStatus');
+            if (!status || !jobStatus) return;
+
+            const total = Number(jobStatus.total_accounts || 0);
+            const checked = Number(jobStatus.checked_accounts || 0);
+            const refreshed = Number(jobStatus.refreshed_accounts || 0);
+            const inserted = Number(jobStatus.inserted_or_updated || 0);
+            const failedAccounts = Array.isArray(jobStatus.failed_accounts) ? jobStatus.failed_accounts : [];
+            const parts = [];
+
+            status.classList.remove('hidden');
+            if (jobStatus.running) {
+                parts.push(`正在同步 SQLite：${checked}/${total} 个账户`);
+                parts.push(`已写入 ${inserted} 封`);
+                parts.push(`并发 ${Number(jobStatus.concurrency || 1)}`);
+                if (failedAccounts.length) {
+                    parts.push(`失败 ${failedAccounts.length} 个`);
+                }
+            } else if (jobStatus.started_at) {
+                parts.push(`SQLite 同步完成：${refreshed}/${total} 个账户`);
+                parts.push(`写入 ${inserted} 封`);
+                if (failedAccounts.length) {
+                    parts.push(`失败 ${failedAccounts.length} 个：${failedAccounts.join('、')}`);
+                }
+                if (jobStatus.error) {
+                    parts.push(`任务异常：${jobStatus.error}`);
+                }
+            } else {
+                return;
+            }
+            status.textContent = parts.join(' · ');
+        }
+
+        function handleAllEmailRefreshJobStatus(jobStatus, options = {}) {
+            const { notifyOnComplete = false } = options;
+            renderAllEmailRefreshJobStatus(jobStatus);
+            isRefreshingAllEmailsToSqlite = !!(jobStatus && jobStatus.running);
+
+            if (isRefreshingAllEmailsToSqlite) {
+                allEmailsActiveSyncTaskId = jobStatus.task_id || allEmailsActiveSyncTaskId;
+                setAllEmailRefreshButtonState(true, '同步中...');
+                if (isAllEmailsPageVisible()) {
+                    scheduleAllEmailSyncStatusPolling();
+                }
+                return;
+            }
+
+            stopAllEmailSyncStatusPolling();
+            if (!isLoadingAllEmails) {
+                setAllEmailRefreshButtonState(false);
+            }
+
+            const completedTrackedTask = jobStatus
+                && allEmailsActiveSyncTaskId
+                && jobStatus.task_id === allEmailsActiveSyncTaskId;
+            if (completedTrackedTask) {
+                allEmailsActiveSyncTaskId = null;
+            }
+
+            if (notifyOnComplete && completedTrackedTask && jobStatus.started_at) {
+                const failedCount = Array.isArray(jobStatus.failed_accounts) ? jobStatus.failed_accounts.length : 0;
+                const inserted = Number(jobStatus.inserted_or_updated || 0);
+                const message = failedCount
+                    ? `SQLite 同步完成，${failedCount} 个账户失败，写入 ${inserted} 封邮件`
+                    : `SQLite 同步完成，写入 ${inserted} 封邮件`;
+                showNotification(message, failedCount ? 'warning' : 'success');
+                currentAllEmailsPage = 1;
+                loadAllEmails(false);
+            }
+        }
+
+        async function loadAllEmailSqliteRefreshStatus(options = {}) {
+            const { notifyOnComplete = true } = options;
+            if (!isAllEmailsPageVisible()) {
+                stopAllEmailSyncStatusPolling();
+                return;
+            }
+
+            try {
+                const jobStatus = await apiRequest('/all-emails/refresh-sqlite/status');
+                handleAllEmailRefreshJobStatus(jobStatus, { notifyOnComplete });
+            } catch (error) {
+                stopAllEmailSyncStatusPolling();
+                isRefreshingAllEmailsToSqlite = false;
+                setAllEmailRefreshButtonState(false);
+                showNotification('读取 SQLite 同步状态失败: ' + error.message, 'error');
+            }
+        }
+
+        async function loadAllEmails(forceRefresh = false, options = {}) {
+            const { silent = false } = options;
+            const list = document.getElementById('allEmailsList');
+            const requestId = activeAllEmailRequestId + 1;
+            const requestController = new AbortController();
+            abortActiveAllEmailRequest();
+            activeAllEmailRequestController = requestController;
+            activeAllEmailRequestId = requestId;
+            isLoadingAllEmails = true;
+
+            if (!silent) {
+                list.innerHTML = '<div class="loading"><div class="loading-spinner"></div>正在加载邮件...</div>';
+            }
+            if (!isRefreshingAllEmailsToSqlite) {
+                setAllEmailRefreshButtonState(true, '加载中...');
+            }
+
+            try {
+                const data = await apiRequest(buildAllEmailsUrl(), { signal: requestController.signal });
+                if (requestId !== activeAllEmailRequestId) return;
+                allAccountEmails = Array.isArray(data.emails) ? data.emails : [];
+                allEmailsTotal = Number(data.total_emails || 0);
+                allEmailsFailedAccounts = Array.isArray(data.failed_accounts) ? data.failed_accounts : [];
+                updateAllEmailStats(allEmailsTotal, allAccountEmails, allEmailsFailedAccounts);
+                renderAllEmailsWarning(allEmailsFailedAccounts);
+                renderAllEmailSyncStatus(data);
+                renderAllEmails();
+                updateAllEmailsPagination(allEmailsTotal);
+                stopAllEmailAutoRefresh();
+            } catch (error) {
+                if (error.name === 'AbortError' || requestId !== activeAllEmailRequestId) return;
+                list.innerHTML = '<div class="error">加载失败: ' + escapeHtml(error.message) + '</div>';
+                showNotification('加载全部邮件失败: ' + error.message, 'error');
+                stopAllEmailAutoRefresh();
+            } finally {
+                if (requestId !== activeAllEmailRequestId) return;
+                isLoadingAllEmails = false;
+                activeAllEmailRequestController = null;
+                if (!isRefreshingAllEmailsToSqlite) {
+                    setAllEmailRefreshButtonState(false);
+                }
+            }
+        }
+
+        function updateAllEmailStats(total, emails, failedAccounts) {
+            document.getElementById('allTotalEmailCount').textContent = total;
+            document.getElementById('allPageEmailCount').textContent = emails.length;
+            document.getElementById('allUnreadEmailCount').textContent = emails.filter(email => !email.is_read).length;
+            document.getElementById('allFailedAccountCount').textContent = failedAccounts.length;
+        }
+
+        function renderAllEmailsWarning(failedAccounts = []) {
+            const warning = document.getElementById('allEmailsWarning');
+            if (!warning) return;
+            if (!failedAccounts.length) {
+                warning.classList.add('hidden');
+                warning.textContent = '';
+                return;
+            }
+            warning.classList.remove('hidden');
+            warning.textContent = `以下账户读取失败：${failedAccounts.join('、')}`;
+        }
+
+        function formatFullEmailDate(dateString) {
+            const date = new Date(dateString);
+            if (Number.isNaN(date.getTime())) {
+                return formatEmailDate(dateString);
+            }
+            return date.toLocaleString('zh-CN');
+        }
+
+        const mailboxColorPalette = [
+            { bg: '#dbeafe', text: '#1e40af', border: '#93c5fd' },
+            { bg: '#dcfce7', text: '#166534', border: '#86efac' },
+            { bg: '#fef3c7', text: '#92400e', border: '#fcd34d' },
+            { bg: '#fce7f3', text: '#9d174d', border: '#f9a8d4' },
+            { bg: '#e0f2fe', text: '#075985', border: '#7dd3fc' },
+            { bg: '#ede9fe', text: '#5b21b6', border: '#c4b5fd' },
+            { bg: '#ccfbf1', text: '#115e59', border: '#5eead4' },
+            { bg: '#fee2e2', text: '#991b1b', border: '#fca5a5' },
+            { bg: '#ecfccb', text: '#3f6212', border: '#bef264' },
+            { bg: '#f1f5f9', text: '#334155', border: '#cbd5e1' }
+        ];
+
+        function getStableStringHash(value) {
+            return String(value || '').toLowerCase().split('').reduce((hash, char) => {
+                return ((hash << 5) - hash + char.charCodeAt(0)) | 0;
+            }, 0);
+        }
+
+        function getMailboxColorStyle(emailAddress) {
+            const index = Math.abs(getStableStringHash(emailAddress)) % mailboxColorPalette.length;
+            const color = mailboxColorPalette[index];
+            return `--mailbox-bg: ${color.bg}; --mailbox-text: ${color.text}; --mailbox-border: ${color.border};`;
+        }
+
+        function renderAllEmails() {
+            const list = document.getElementById('allEmailsList');
+            if (!allAccountEmails.length) {
+                list.innerHTML = '<div class="text-center" style="padding: 40px; color: #64748b;">没有找到匹配的邮件</div>';
+                return;
+            }
+            list.innerHTML = allAccountEmails.map(email => createAllEmailItem(email)).join('');
+        }
+
+        function createAllEmailItem(email) {
+            const unreadClass = email.is_read ? '' : 'unread';
+            const sender = getSenderProfile(email.from_email);
+            const senderLogoUrl = resolveSenderLogoUrl(sender.email);
+            const accountParam = encodeURIComponent(email.account_email || '');
+            const messageParam = encodeURIComponent(email.message_id || '');
+            const readLabel = email.is_read ? '已读' : '未读';
+            const accountEmail = email.account_email || '-';
+            const accountBadgeStyle = getMailboxColorStyle(accountEmail);
+            const accountCategoryHtml = email.account_category
+                ? `<span class="account-tag category">分类：${escapeHtml(getCategoryLabel(email.account_category))}</span>`
+                : '<span class="account-tag category">分类：未分类</span>';
+            const accountTagDetails = Array.isArray(email.account_tag_details) ? email.account_tag_details : [];
+            const accountTagsHtml = accountTagDetails.length
+                ? accountTagDetails.map(tag => `<span class="account-tag">标签：${escapeHtml(getTagLabel(tag))}</span>`).join('')
+                : '<span class="account-tag">标签：无标签</span>';
+
+            return `
+                <div class="email-item ${unreadClass}" data-message-id="${escapeHtml(email.message_id || '')}" onclick="showAllEmailDetail('${accountParam}', '${messageParam}')">
+                    ${renderSenderAvatar(email.sender_initial || sender.initial, senderLogoUrl, 'email-avatar', email.sender_avatar_url)}
+                    <div class="email-content">
+                        <div class="email-header">
+                            <div class="email-subject">${escapeHtml(email.subject || '(无主题)')}</div>
+                            <div class="email-date">${escapeHtml(formatEmailDate(email.date))}</div>
+                        </div>
+                        <div class="email-from">
+                            ${email.is_read ? icon('read', 'email-meta-icon') : icon('unread', 'email-meta-icon')}
+                            <span class="email-from-text">${escapeHtml(sender.email)}</span>
+                            ${email.has_attachments ? icon('attachment', 'email-meta-icon attachment') : ''}
+                        </div>
+                        <div class="email-preview all-email-meta">
+                            <span>收件邮箱：<strong class="mailbox-color-badge" style="${accountBadgeStyle}" title="${escapeHtml(accountEmail)}">${escapeHtml(accountEmail)}</strong></span>
+                            <span>收件时间：<strong>${escapeHtml(formatFullEmailDate(email.date))}</strong></span>
+                            <span>状态：<strong>${escapeHtml(readLabel)}</strong></span>
+                            <span>文件夹：<strong>${escapeHtml(email.folder || '-')}</strong></span>
+                        </div>
+                        <div class="account-tags all-email-account-tags">${accountCategoryHtml}${accountTagsHtml}</div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function searchAllEmails() {
+            currentAllEmailsPage = 1;
+            loadAllEmails();
+        }
+
+        function refreshAllEmails() {
+            refreshAllEmailsToSqlite();
+        }
+
+        async function refreshAllEmailsToSqlite() {
+            stopAllEmailSyncStatusPolling();
+            isRefreshingAllEmailsToSqlite = true;
+            allEmailsActiveSyncTaskId = null;
+            setAllEmailRefreshButtonState(true, '同步中...');
+
+            try {
+                const jobStatus = await apiRequest('/all-emails/refresh-sqlite', {
+                    method: 'POST'
+                });
+                allEmailsActiveSyncTaskId = jobStatus.task_id || allEmailsActiveSyncTaskId;
+                handleAllEmailRefreshJobStatus(jobStatus, { notifyOnComplete: !jobStatus.running });
+                if (jobStatus.running) {
+                    showNotification('SQLite 同步任务已开始，可继续浏览当前列表', 'success');
+                }
+            } catch (error) {
+                stopAllEmailSyncStatusPolling();
+                isRefreshingAllEmailsToSqlite = false;
+                setAllEmailRefreshButtonState(false);
+                showNotification('刷新邮件到 SQLite 失败: ' + error.message, 'error');
+            }
+        }
+
+        function clearAllEmailFilters() {
+            document.getElementById('allEmailSearchInput').value = '';
+            document.getElementById('allEmailDateFrom').value = '';
+            document.getElementById('allEmailDateTo').value = '';
+            currentAllEmailsPage = 1;
+            loadAllEmails();
+        }
+
+        function handleAllEmailSearchKeyPress(event) {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                searchAllEmails();
+            }
+        }
+
+        function showAllEmailDetail(encodedAccount, encodedMessageId) {
+            showEmailDetail(decodeURIComponent(encodedMessageId), decodeURIComponent(encodedAccount));
+        }
+
+        function updateAllEmailsPagination(totalEmails) {
+            const pagination = document.getElementById('allEmailsPagination');
+            const totalPages = Math.ceil(totalEmails / allEmailsPageSize);
+            if (!pagination || totalPages <= 1) {
+                if (pagination) pagination.classList.add('hidden');
+                return;
+            }
+
+            pagination.classList.remove('hidden');
+            pagination.innerHTML = `
+                <button class="btn btn-secondary btn-sm" type="button" onclick="changeAllEmailPage(${currentAllEmailsPage - 1})" ${currentAllEmailsPage === 1 ? 'disabled' : ''}>${icon('arrow-left')} 上一页</button>
+                <span style="padding: 0 16px; color: #64748b;">${currentAllEmailsPage} / ${totalPages}</span>
+                <button class="btn btn-secondary btn-sm" type="button" onclick="changeAllEmailPage(${currentAllEmailsPage + 1})" ${currentAllEmailsPage === totalPages ? 'disabled' : ''}>下一页 ${icon('arrow-right')}</button>
+            `;
+        }
+
+        function changeAllEmailPage(page) {
+            if (page < 1) return;
+            currentAllEmailsPage = page;
+            loadAllEmails();
+        }
+
+        function exportAllEmails() {
+            if (!allAccountEmails.length) {
+                showNotification('没有邮件可导出', 'warning');
+                return;
+            }
+
+            const headers = ['收件邮箱', '账户分类', '账户标签', '主题', '发件人', '收件时间', '文件夹', '是否已读', '是否有附件'];
+            const rows = allAccountEmails.map(email => [
+                csvCell(email.account_email || ''),
+                csvCell(getCategoryLabel(email.account_category)),
+                csvCell((Array.isArray(email.account_tag_details) ? email.account_tag_details.map(getTagLabel).join(' | ') : '') || '无标签'),
+                csvCell(email.subject || ''),
+                csvCell(email.from_email || ''),
+                csvCell(email.date || ''),
+                csvCell(email.folder || ''),
+                email.is_read ? '已读' : '未读',
+                email.has_attachments ? '有附件' : '无附件'
+            ]);
+            const csvContent = [headers, ...rows].map(row => row.join(',')).join('\n');
+            downloadCSV(csvContent, 'all_emails_' + new Date().toISOString().split('T')[0] + '.csv');
+            showNotification('全部邮件当前页已导出', 'success');
+        }
+
+        function csvCell(value) {
+            return `"${String(value || '').replace(/"/g, '""')}"`;
         }
 
         async function loadEmails(forceRefresh = false) {
@@ -11627,14 +12398,55 @@ Authorization: Bearer om_your_api_key
 
             allEmails = applyToList(allEmails);
             filteredEmails = applyToList(filteredEmails);
+            allAccountEmails = allAccountEmails.map(email => {
+                if (email.message_id !== normalizedMessageId) return email;
+                if (currentEmailDetailAccount && email.account_email !== currentEmailDetailAccount) return email;
+                return {
+                    ...email,
+                    tag_keys: normalizedTagKeys,
+                    tag_details: nextTagDetails
+                };
+            });
             renderFilteredEmails();
+            if (document.getElementById('allEmailsPage') && !document.getElementById('allEmailsPage').classList.contains('hidden')) {
+                renderAllEmails();
+            }
+        }
+
+        function syncLocalEmailReadState(messageId, accountEmail = currentEmailDetailAccount || currentAccount) {
+            const normalizedMessageId = String(messageId || '');
+            const normalizedAccount = String(accountEmail || '');
+            if (!normalizedMessageId) return;
+
+            const markRead = email => {
+                if (!email || email.message_id !== normalizedMessageId) return email;
+                return { ...email, is_read: true };
+            };
+
+            if (!normalizedAccount || normalizedAccount === currentAccount) {
+                allEmails = allEmails.map(markRead);
+                filteredEmails = filteredEmails.map(markRead);
+                updateEmailStats(allEmails);
+                applyFilters();
+            }
+
+            allAccountEmails = allAccountEmails.map(email => {
+                if (!email || email.message_id !== normalizedMessageId) return email;
+                if (normalizedAccount && email.account_email !== normalizedAccount) return email;
+                return { ...email, is_read: true };
+            });
+            updateAllEmailStats(allEmailsTotal, allAccountEmails, allEmailsFailedAccounts);
+            if (document.getElementById('allEmailsPage') && !document.getElementById('allEmailsPage').classList.contains('hidden')) {
+                renderAllEmails();
+            }
         }
 
         async function toggleCurrentEmailTag(key) {
-            if (!currentAccount || !currentEmailMessageId) return;
+            const targetAccount = currentEmailDetailAccount || currentAccount;
+            if (!targetAccount || !currentEmailMessageId) return;
             const nextTagKeys = toggleKeyInList(currentEmailTagKeys, key);
             try {
-                const response = await apiRequest(`/emails/${currentAccount}/${encodeURIComponent(currentEmailMessageId)}/tags`, {
+                const response = await apiRequest(`/emails/${encodeURIComponent(targetAccount)}/${encodeURIComponent(currentEmailMessageId)}/tags`, {
                     method: 'PUT',
                     body: JSON.stringify({ tag_keys: nextTagKeys })
                 });
@@ -11654,9 +12466,10 @@ Authorization: Bearer om_your_api_key
             const senderLogoUrl = resolveSenderLogoUrl(sender.email);
             const attachmentIcon = email.has_attachments ? '<span style="color: #8b5cf6;">📎</span>' : '';
             const readIcon = email.is_read ? '✉️' : '📩';
+            const messageParam = encodeURIComponent(email.message_id || '');
 
             return `
-                <div class="email-item ${unreadClass}" data-message-id="${escapeHtml(email.message_id || '')}" onclick="showEmailDetail('${email.message_id}')">
+                <div class="email-item ${unreadClass}" data-message-id="${escapeHtml(email.message_id || '')}" onclick="showEmailDetail(decodeURIComponent('${messageParam}'))">
                     ${renderSenderAvatar(email.sender_initial || sender.initial, senderLogoUrl, 'email-avatar', email.sender_avatar_url)}
                     <div class="email-content">
                         <div class="email-header">
@@ -11670,18 +12483,24 @@ Authorization: Bearer om_your_api_key
             `;
         }
 
-        async function showEmailDetail(messageId) {
+        async function showEmailDetail(messageId, accountEmail = currentAccount) {
+            if (!accountEmail) {
+                showNotification('缺少邮件所属邮箱，无法加载详情', 'warning');
+                return;
+            }
             await loadClassifications().catch(() => null);
             document.getElementById('emailModal').classList.remove('hidden');
             document.getElementById('emailModalTitle').textContent = '邮件详情';
             document.getElementById('emailModalContent').innerHTML = '<div class="loading">正在加载邮件详情...</div>';
 
             try {
-                const data = await apiRequest('/emails/' + currentAccount + '/' + messageId);
+                const data = await apiRequest('/emails/' + encodeURIComponent(accountEmail) + '/' + encodeURIComponent(messageId));
                 const sender = getSenderProfile(data.from_email);
                 const senderLogoUrl = resolveSenderLogoUrl(sender.email);
                 currentEmailMessageId = data.message_id;
+                currentEmailDetailAccount = accountEmail;
                 currentEmailTagKeys = Array.isArray(data.tag_keys) ? data.tag_keys.map(normalizeKey) : [];
+                syncLocalEmailReadState(data.message_id, accountEmail);
 
                 document.getElementById('emailModalTitle').textContent = data.subject || '(无主题)';
                 document.getElementById('emailModalContent').innerHTML = `
@@ -11694,6 +12513,10 @@ Authorization: Bearer om_your_api_key
                         </div>
                     </div>
                     <div class="email-detail-meta">
+                        <div class="email-detail-meta-item">
+                            <span>收件邮箱</span>
+                            <strong>${escapeHtml(accountEmail)}</strong>
+                        </div>
                         <div class="email-detail-meta-item">
                             <span>收件人</span>
                             <strong>${escapeHtml(data.to_email)}</strong>
@@ -11774,6 +12597,7 @@ Authorization: Bearer om_your_api_key
         function closeEmailModal() {
             document.getElementById('emailModal').classList.add('hidden');
             currentEmailMessageId = null;
+            currentEmailDetailAccount = null;
             currentEmailTagKeys = [];
         }
 
@@ -12377,6 +13201,12 @@ Authorization: Bearer om_your_api_key
                 stopAccountSelectionDrag();
             }
 
+            if ((e.ctrlKey || e.metaKey) && e.key === 'f' && document.getElementById('allEmailSearchInput') && !document.getElementById('allEmailsPage').classList.contains('hidden')) {
+                e.preventDefault();
+                document.getElementById('allEmailSearchInput').focus();
+                return;
+            }
+
             if ((e.ctrlKey || e.metaKey) && e.key === 'f' && document.getElementById('mailSearchInput') && !document.getElementById('emailsPage').classList.contains('hidden')) {
                 e.preventDefault();
                 document.getElementById('mailSearchInput').focus();
@@ -12434,6 +13264,7 @@ Authorization: Bearer om_your_api_key
                 : (currentPath.startsWith(adminBasePath + '/') ? currentPath.slice(adminBasePath.length) : '/');
             const pageRoutes = {
                 '/accounts': 'accounts',
+                '/all-emails': 'allEmails',
                 '/add-account': 'addAccount',
                 '/batch-add': 'batchAdd',
                 '/classifications': 'classifications',

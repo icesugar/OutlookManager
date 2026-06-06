@@ -21,9 +21,10 @@ import os
 import re
 import secrets
 import socket
+import sqlite3
 import threading
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, closing
 from datetime import datetime, timedelta, timezone
 from itertools import groupby
 from pathlib import Path
@@ -60,7 +61,13 @@ ACCOUNT_HEALTH_FILE = Path(os.getenv("ACCOUNT_HEALTH_FILE", str(DATA_DIR / "acco
 ACCOUNT_CLASSIFICATIONS_FILE = Path(os.getenv("ACCOUNT_CLASSIFICATIONS_FILE", str(DATA_DIR / "account_classifications.json")))
 EMAIL_TAGS_FILE = Path(os.getenv("EMAIL_TAGS_FILE", str(DATA_DIR / "email_tags.json")))
 SITE_SETTINGS_FILE = Path(os.getenv("SITE_SETTINGS_FILE", str(DATA_DIR / "site_settings.json")))
+ALL_EMAIL_SQLITE_FILE = Path(os.getenv("ALL_EMAIL_SQLITE_FILE", str(DATA_DIR / "all_emails.sqlite3")))
 STATIC_DIR = BASE_DIR / "static"
+HTML_NO_CACHE_HEADERS = {
+    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+    "Pragma": "no-cache",
+    "Expires": "0",
+}
 ICON_CACHE_DIR = DATA_DIR / "icon_cache"
 ICON_ASSET_DIR = STATIC_DIR / "assets" / "icons"
 SESSION_COOKIE = "outlookmanager_session"
@@ -100,6 +107,15 @@ SOCKET_TIMEOUT = 15
 
 # 缓存配置
 CACHE_EXPIRE_TIME = 60  # 缓存过期时间（秒）
+ALL_EMAIL_CACHE_TTL = max(30, int(os.getenv("ALL_EMAIL_CACHE_TTL", "300")))
+ALL_EMAIL_FIRST_LOAD_WAIT_SECONDS = max(0.05, float(os.getenv("ALL_EMAIL_FIRST_LOAD_WAIT_SECONDS", "0.15")))
+ALL_EMAIL_FORCE_REFRESH_WAIT_SECONDS = max(0.05, float(os.getenv("ALL_EMAIL_FORCE_REFRESH_WAIT_SECONDS", "0.08")))
+ALL_EMAIL_ACCOUNT_CONCURRENCY = max(1, int(os.getenv("ALL_EMAIL_ACCOUNT_CONCURRENCY", "10")))
+ALL_EMAIL_ACCOUNT_TIMEOUT_SECONDS = max(5.0, float(os.getenv("ALL_EMAIL_ACCOUNT_TIMEOUT_SECONDS", "25")))
+ALL_EMAIL_SQLITE_REFRESH_LIMIT = max(1, int(os.getenv("ALL_EMAIL_SQLITE_REFRESH_LIMIT", "5")))
+ALL_EMAIL_SQLITE_ACCOUNT_TIMEOUT_SECONDS = max(5.0, float(os.getenv("ALL_EMAIL_SQLITE_ACCOUNT_TIMEOUT_SECONDS", "60")))
+ALL_EMAIL_SQLITE_AUTO_SYNC_DEFAULT_ENABLED = True
+ALL_EMAIL_SQLITE_AUTO_SYNC_DEFAULT_INTERVAL_MINUTES = 10
 CLASSIFICATION_KEY_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 EMAIL_ADDRESS_PATTERN = re.compile(r"[A-Z0-9._%+\-']+@[A-Z0-9.\-]+\.[A-Z]{2,}", re.IGNORECASE)
 BUILTIN_CLASSIFICATION_REMARK = "此分类此标签为适配MREGISTER开源项目"
@@ -138,6 +154,11 @@ LOCAL_DOMAIN_ICON_RULES: list[tuple[str, tuple[str, ...]]] = [
         ),
     ),
 ]
+
+
+def html_file_response(filename: str) -> FileResponse:
+    return FileResponse(STATIC_DIR / filename, headers=HTML_NO_CACHE_HEADERS)
+
 
 # 日志配置
 logging.basicConfig(
@@ -245,6 +266,60 @@ class EmailListResponse(BaseModel):
     page_size: int
     total_emails: int
     emails: List[EmailItem]
+
+
+class AllEmailItem(EmailItem):
+    """跨账户邮件列表项目"""
+    account_email: str
+    account_category_key: Optional[str] = None
+    account_category: Optional[ClassificationOption] = None
+    account_tag_keys: List[str] = Field(default_factory=list)
+    account_tag_details: List[ClassificationOption] = Field(default_factory=list)
+
+
+class AllEmailListResponse(BaseModel):
+    """跨账户邮件列表响应模型"""
+    page: int
+    page_size: int
+    total_emails: int
+    emails: List[AllEmailItem]
+    failed_accounts: List[str] = Field(default_factory=list)
+    refreshing: bool = False
+    cache_updated_at: Optional[str] = None
+    cache_age_seconds: Optional[int] = None
+    pending_accounts: int = 0
+
+
+class AllEmailSqliteRefreshResponse(BaseModel):
+    """全部邮件 SQLite 刷新结果"""
+    total_accounts: int
+    refreshed_accounts: int
+    inserted_or_updated: int
+    failed_accounts: List[str] = Field(default_factory=list)
+    started_at: str
+    completed_at: str
+
+
+class AllEmailSqliteRefreshRequest(BaseModel):
+    """全部邮件 SQLite 刷新参数"""
+    concurrency: int = Field(default=5, ge=1, le=50)
+
+
+class AllEmailSqliteRefreshStatusResponse(BaseModel):
+    """全部邮件 SQLite 后台刷新状态"""
+    task_id: Optional[str] = None
+    running: bool = False
+    total_accounts: int = 0
+    checked_accounts: int = 0
+    refreshed_accounts: int = 0
+    inserted_or_updated: int = 0
+    failed_accounts: List[str] = Field(default_factory=list)
+    account_errors: dict[str, str] = Field(default_factory=dict)
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    concurrency: int = 5
+    trigger: str = "manual"
+    error: str = ""
 
 
 class DualViewEmailResponse(BaseModel):
@@ -384,6 +459,9 @@ class SiteSettingsPayload(BaseModel):
     turnstile_secret_key: Optional[str] = Field(default=None, max_length=512)
     turnstile_enabled_for_admin_login: bool = Field(default=False)
     turnstile_enabled_for_public_access: bool = Field(default=False)
+    all_email_sqlite_auto_sync_enabled: bool = Field(default=True)
+    all_email_sqlite_sync_concurrency: int = Field(default=5, ge=1, le=50)
+    all_email_sqlite_auto_sync_interval_minutes: int = Field(default=10, ge=1, le=1440)
 
 # ============================================================================
 # IMAP连接池管理
@@ -563,6 +641,26 @@ imap_pool = IMAPConnectionPool()
 # 内存缓存存储
 email_cache = {}  # 邮件列表缓存
 email_count_cache = {}  # 邮件总数缓存，用于检测新邮件
+all_email_query_cache: dict[str, dict[str, Any]] = {}
+all_email_refresh_tasks: dict[str, asyncio.Task] = {}
+all_email_cache_lock = threading.RLock()
+all_email_sqlite_refresh_task: Optional[asyncio.Task] = None
+all_email_sqlite_auto_sync_task: Optional[asyncio.Task] = None
+all_email_sqlite_refresh_status = {
+    "task_id": None,
+    "running": False,
+    "total_accounts": 0,
+    "checked_accounts": 0,
+    "refreshed_accounts": 0,
+    "inserted_or_updated": 0,
+    "failed_accounts": [],
+    "account_errors": {},
+    "started_at": None,
+    "completed_at": None,
+    "concurrency": 5,
+    "trigger": "manual",
+    "error": "",
+}
 
 
 def get_cache_key(email: str, folder: str, page: int, page_size: int) -> str:
@@ -917,6 +1015,7 @@ def remove_account_category_references(category_key: str) -> None:
 
         if changed:
             _write_json_file(ACCOUNTS_FILE, accounts)
+            clear_all_email_query_cache()
 
 
 def remove_tag_references(tag_key: str) -> None:
@@ -937,6 +1036,7 @@ def remove_tag_references(tag_key: str) -> None:
 
             if accounts_changed:
                 _write_json_file(ACCOUNTS_FILE, accounts)
+                clear_all_email_query_cache()
 
     email_tags_data = load_email_tags_data()
     emails = email_tags_data.get("emails", {})
@@ -961,6 +1061,7 @@ def remove_tag_references(tag_key: str) -> None:
     if email_tags_changed:
         email_tags_data["emails"] = emails
         save_email_tags_data(email_tags_data)
+        clear_all_email_query_cache()
 
 
 def apply_email_tag_details(
@@ -1079,6 +1180,1032 @@ def filter_email_list_response_by_recipient(
         page_size=response.page_size,
         total_emails=len(filtered_emails),
         emails=filtered_emails,
+    )
+
+
+def parse_iso_datetime_for_filter(value: str | None, end_of_day: bool = False) -> datetime | None:
+    """解析筛选日期，统一转为无时区 UTC 时间。"""
+    raw_value = str(value or "").strip()
+    if not raw_value:
+        return None
+
+    try:
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw_value):
+            suffix = "23:59:59.999999" if end_of_day else "00:00:00"
+            parsed = datetime.fromisoformat(f"{raw_value}T{suffix}")
+        else:
+            parsed = datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid date filter: {raw_value}")
+
+    if parsed.tzinfo:
+        return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed
+
+
+def parse_email_item_datetime(value: str | None) -> datetime:
+    """解析邮件日期，失败时返回最小值以便排序落后。"""
+    raw_value = str(value or "").strip()
+    if not raw_value:
+        return datetime.min
+
+    try:
+        parsed = datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            parsed = parsedate_to_datetime(raw_value)
+        except Exception:
+            return datetime.min
+
+    if parsed.tzinfo:
+        return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed
+
+
+def email_item_in_date_range(
+    email_item: EmailItem,
+    date_from: datetime | None,
+    date_to: datetime | None,
+) -> bool:
+    email_date = parse_email_item_datetime(email_item.date)
+    if date_from and email_date < date_from:
+        return False
+    if date_to and email_date > date_to:
+        return False
+    return True
+
+
+def all_email_basic_search_text(
+    email_item: EmailItem,
+    account_email: str,
+    account_category: ClassificationOption | None = None,
+    account_tag_details: list[ClassificationOption] | None = None,
+) -> str:
+    tag_text = " ".join(
+        f"{tag.key or ''} {tag.name_zh or ''} {tag.name_en or ''}"
+        for tag in (email_item.tag_details or [])
+    )
+    account_category_text = (
+        f"{account_category.key or ''} {account_category.name_zh or ''} {account_category.name_en or ''}"
+        if account_category else ""
+    )
+    account_tag_text = " ".join(
+        f"{tag.key or ''} {tag.name_zh or ''} {tag.name_en or ''}"
+        for tag in (account_tag_details or [])
+    )
+    return " ".join([
+        account_email,
+        email_item.subject or "",
+        email_item.from_email or "",
+        email_item.to_email or "",
+        email_item.folder or "",
+        tag_text,
+        account_category_text,
+        account_tag_text,
+    ]).lower()
+
+
+async def all_email_matches_content(
+    credentials: AccountCredentials,
+    email_item: EmailItem,
+    search_term: str,
+) -> bool:
+    try:
+        detail = await get_email_details(credentials, email_item.message_id)
+    except HTTPException:
+        return False
+    content = " ".join([
+        detail.body_plain or "",
+        strip_html_tags(detail.body_html or ""),
+    ]).lower()
+    return search_term in content
+
+
+def build_all_email_item(
+    account_email: str,
+    email_item: EmailItem,
+    account_category_key: str | None = None,
+    account_category: ClassificationOption | None = None,
+    account_tag_keys: list[str] | None = None,
+    account_tag_details: list[ClassificationOption] | None = None,
+) -> AllEmailItem:
+    payload = email_item.model_dump()
+    payload["account_email"] = account_email
+    payload["account_category_key"] = account_category_key
+    payload["account_category"] = account_category
+    payload["account_tag_keys"] = account_tag_keys or []
+    payload["account_tag_details"] = account_tag_details or []
+    return AllEmailItem(**payload)
+
+
+def datetime_to_utc_timestamp(value: datetime) -> float:
+    if value == datetime.min:
+        return -62135596800.0
+    utc_value = value.astimezone(timezone.utc) if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
+    return (utc_value - epoch).total_seconds()
+
+
+def email_item_datetime_to_timestamp(value: str | None) -> float:
+    return datetime_to_utc_timestamp(parse_email_item_datetime(value))
+
+
+def build_all_email_sqlite_search_text(account_email: str, email_item: EmailItem) -> str:
+    return " ".join([
+        account_email,
+        email_item.subject or "",
+        email_item.from_email or "",
+        email_item.to_email or "",
+        email_item.folder or "",
+    ]).lower()
+
+
+def get_all_email_sqlite_connection() -> sqlite3.Connection:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(str(ALL_EMAIL_SQLITE_FILE))
+    connection.row_factory = sqlite3.Row
+    return connection
+
+
+def initialize_all_email_sqlite() -> None:
+    with closing(get_all_email_sqlite_connection()) as connection:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS all_email_index (
+                account_email TEXT NOT NULL,
+                message_id TEXT NOT NULL,
+                folder TEXT NOT NULL,
+                subject TEXT NOT NULL,
+                from_email TEXT NOT NULL,
+                to_email TEXT,
+                received_at TEXT NOT NULL,
+                received_at_ts REAL NOT NULL,
+                is_read INTEGER NOT NULL DEFAULT 0,
+                has_attachments INTEGER NOT NULL DEFAULT 0,
+                sender_initial TEXT,
+                sender_avatar_url TEXT,
+                search_text TEXT NOT NULL,
+                synced_at TEXT NOT NULL,
+                PRIMARY KEY (account_email, message_id)
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_all_email_received_at ON all_email_index(received_at_ts DESC)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_all_email_account ON all_email_index(account_email)"
+        )
+        connection.commit()
+
+
+def upsert_all_email_sqlite_items(account_email: str, email_items: list[EmailItem]) -> int:
+    if not email_items:
+        return 0
+
+    initialize_all_email_sqlite()
+    synced_at = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    rows = [
+        (
+            account_email,
+            email_item.message_id,
+            email_item.folder,
+            email_item.subject,
+            email_item.from_email,
+            email_item.to_email,
+            email_item.date,
+            email_item_datetime_to_timestamp(email_item.date),
+            1 if email_item.is_read else 0,
+            1 if email_item.has_attachments else 0,
+            email_item.sender_initial,
+            email_item.sender_avatar_url,
+            build_all_email_sqlite_search_text(account_email, email_item),
+            synced_at,
+        )
+        for email_item in email_items
+    ]
+
+    with closing(get_all_email_sqlite_connection()) as connection:
+        connection.executemany(
+            """
+            INSERT INTO all_email_index (
+                account_email, message_id, folder, subject, from_email, to_email,
+                received_at, received_at_ts, is_read, has_attachments,
+                sender_initial, sender_avatar_url, search_text, synced_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(account_email, message_id) DO UPDATE SET
+                folder = excluded.folder,
+                subject = excluded.subject,
+                from_email = excluded.from_email,
+                to_email = excluded.to_email,
+                received_at = excluded.received_at,
+                received_at_ts = excluded.received_at_ts,
+                is_read = excluded.is_read,
+                has_attachments = excluded.has_attachments,
+                sender_initial = excluded.sender_initial,
+                sender_avatar_url = excluded.sender_avatar_url,
+                search_text = excluded.search_text,
+                synced_at = excluded.synced_at
+            """,
+            rows,
+        )
+        connection.commit()
+    return len(rows)
+
+
+def get_all_email_sqlite_account_latest_ts(account_email: str) -> float | None:
+    initialize_all_email_sqlite()
+    with closing(get_all_email_sqlite_connection()) as connection:
+        row = connection.execute(
+            "SELECT MAX(received_at_ts) AS latest_ts FROM all_email_index WHERE account_email = ?",
+            (account_email,),
+        ).fetchone()
+    if not row or row["latest_ts"] is None:
+        return None
+    return float(row["latest_ts"])
+
+
+def get_all_email_sqlite_existing_ids(account_email: str, message_ids: list[str]) -> set[str]:
+    if not message_ids:
+        return set()
+    initialize_all_email_sqlite()
+    placeholders = ",".join("?" for _ in message_ids)
+    with closing(get_all_email_sqlite_connection()) as connection:
+        rows = connection.execute(
+            f"""
+            SELECT message_id
+            FROM all_email_index
+            WHERE account_email = ? AND message_id IN ({placeholders})
+            """,
+            [account_email, *message_ids],
+        ).fetchall()
+    return {str(row["message_id"]) for row in rows}
+
+
+def update_all_email_sqlite_read_state(account_email: str, message_id: str) -> None:
+    initialize_all_email_sqlite()
+    with closing(get_all_email_sqlite_connection()) as connection:
+        connection.execute(
+            """
+            UPDATE all_email_index
+            SET is_read = 1
+            WHERE account_email = ? AND message_id = ?
+            """,
+            (account_email, message_id),
+        )
+        connection.commit()
+
+
+def delete_all_email_sqlite_account(account_email: str) -> None:
+    initialize_all_email_sqlite()
+    with closing(get_all_email_sqlite_connection()) as connection:
+        connection.execute(
+            "DELETE FROM all_email_index WHERE account_email = ?",
+            (account_email,),
+        )
+        connection.commit()
+
+
+def get_all_email_sqlite_latest_synced_at() -> str | None:
+    initialize_all_email_sqlite()
+    with closing(get_all_email_sqlite_connection()) as connection:
+        row = connection.execute("SELECT MAX(synced_at) AS synced_at FROM all_email_index").fetchone()
+    if not row:
+        return None
+    value = str(row["synced_at"] or "").strip()
+    return value or None
+
+
+def build_all_email_item_from_sqlite_row(
+    row: sqlite3.Row,
+    accounts_data: dict[str, Any],
+    catalog: dict[str, Any],
+    email_tags_data: dict[str, Any],
+) -> AllEmailItem:
+    account_email = str(row["account_email"])
+    account_data = accounts_data.get(account_email)
+    account_data = account_data if isinstance(account_data, dict) else {}
+    account_category_key = normalize_account_category_key(account_data.get("category_key"))
+    account_tag_keys = normalize_account_tag_keys(account_data.get("tag_keys", []), account_data.get("tags", []))
+    account_category = resolve_category_option(account_category_key, catalog)
+    account_tag_details = resolve_tag_options(account_tag_keys, catalog)
+
+    email_tag_map = email_tags_data.get("emails", {}).get(account_email, {})
+    email_tag_map = email_tag_map if isinstance(email_tag_map, dict) else {}
+    email_item = EmailItem(
+        message_id=str(row["message_id"]),
+        folder=str(row["folder"]),
+        subject=str(row["subject"]),
+        from_email=str(row["from_email"]),
+        date=str(row["received_at"]),
+        is_read=bool(row["is_read"]),
+        has_attachments=bool(row["has_attachments"]),
+        sender_initial=str(row["sender_initial"] or "?"),
+        sender_avatar_url=row["sender_avatar_url"],
+        to_email=row["to_email"],
+    )
+    email_item = apply_email_tag_details(account_email, email_item, catalog, email_tag_map)
+    return build_all_email_item(
+        account_email,
+        email_item,
+        account_category_key,
+        account_category,
+        account_tag_keys,
+        account_tag_details,
+    )
+
+
+def query_all_email_sqlite_response(
+    page: int,
+    page_size: int,
+    search: str | None = None,
+    date_from_value: str | None = None,
+    date_to_value: str | None = None,
+) -> AllEmailListResponse:
+    accounts_data = load_accounts_data()
+    account_ids = [
+        str(email_id)
+        for email_id, account_data in accounts_data.items()
+        if isinstance(account_data, dict)
+    ]
+    if not account_ids:
+        return AllEmailListResponse(page=page, page_size=page_size, total_emails=0, emails=[])
+
+    search_term = str(search or "").strip().lower()
+    date_from = parse_iso_datetime_for_filter(date_from_value)
+    date_to = parse_iso_datetime_for_filter(date_to_value, end_of_day=True)
+    if date_from and date_to and date_from > date_to:
+        raise HTTPException(status_code=400, detail="date_from cannot be later than date_to")
+
+    initialize_all_email_sqlite()
+    where_clauses = [f"account_email IN ({','.join('?' for _ in account_ids)})"]
+    params: list[Any] = list(account_ids)
+    if search_term:
+        where_clauses.append("search_text LIKE ?")
+        params.append(f"%{search_term}%")
+    if date_from:
+        where_clauses.append("received_at_ts >= ?")
+        params.append(datetime_to_utc_timestamp(date_from))
+    if date_to:
+        where_clauses.append("received_at_ts <= ?")
+        params.append(datetime_to_utc_timestamp(date_to))
+
+    where_sql = " AND ".join(where_clauses)
+    offset = (page - 1) * page_size
+    with closing(get_all_email_sqlite_connection()) as connection:
+        total_row = connection.execute(
+            f"SELECT COUNT(*) AS total FROM all_email_index WHERE {where_sql}",
+            params,
+        ).fetchone()
+        rows = connection.execute(
+            f"""
+            SELECT *
+            FROM all_email_index
+            WHERE {where_sql}
+            ORDER BY received_at_ts DESC, account_email ASC, message_id ASC
+            LIMIT ? OFFSET ?
+            """,
+            [*params, page_size, offset],
+        ).fetchall()
+
+    catalog = load_account_classifications_data()
+    email_tags_data = load_email_tags_data()
+    synced_at = get_all_email_sqlite_latest_synced_at()
+    cache_age = None
+    if synced_at:
+        try:
+            cache_age = int(max(0, (datetime.utcnow() - parse_iso_datetime_for_filter(synced_at)).total_seconds()))
+        except Exception:
+            cache_age = None
+
+    return AllEmailListResponse(
+        page=page,
+        page_size=page_size,
+        total_emails=int(total_row["total"] if total_row else 0),
+        emails=[
+            build_all_email_item_from_sqlite_row(row, accounts_data, catalog, email_tags_data)
+            for row in rows
+        ],
+        failed_accounts=[],
+        refreshing=False,
+        cache_updated_at=synced_at,
+        cache_age_seconds=cache_age,
+        pending_accounts=0,
+    )
+
+
+def build_all_email_cache_key(
+    page: int,
+    page_size: int,
+    search: str | None,
+    date_from_value: str | None,
+    date_to_value: str | None,
+) -> str:
+    payload = {
+        "page": page,
+        "page_size": page_size,
+        "search": str(search or "").strip().lower(),
+        "date_from": str(date_from_value or "").strip(),
+        "date_to": str(date_to_value or "").strip(),
+    }
+    raw_key = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
+
+
+def clear_all_email_query_cache() -> None:
+    with all_email_cache_lock:
+        all_email_query_cache.clear()
+        for task in all_email_refresh_tasks.values():
+            if not task.done():
+                task.cancel()
+        all_email_refresh_tasks.clear()
+
+
+def get_all_email_cache_entry(cache_key: str) -> dict[str, Any] | None:
+    with all_email_cache_lock:
+        return all_email_query_cache.get(cache_key)
+
+
+def set_all_email_cache_entry(cache_key: str, response: AllEmailListResponse) -> None:
+    now = time.time()
+    updated_at = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    cached_response = response.model_copy(
+        deep=True,
+        update={
+            "refreshing": False,
+            "cache_updated_at": updated_at,
+            "cache_age_seconds": 0,
+            "pending_accounts": 0,
+        },
+    )
+    with all_email_cache_lock:
+        all_email_query_cache[cache_key] = {
+            "response": cached_response,
+            "created_at": now,
+        }
+
+
+def decorate_all_email_response(
+    response: AllEmailListResponse,
+    created_at: float | None,
+    refreshing: bool,
+    pending_accounts: int = 0,
+) -> AllEmailListResponse:
+    cache_age = int(max(0, time.time() - created_at)) if created_at else None
+    return response.model_copy(
+        deep=True,
+        update={
+            "refreshing": refreshing,
+            "cache_age_seconds": cache_age,
+            "pending_accounts": pending_accounts if refreshing else 0,
+        },
+    )
+
+
+def build_empty_all_email_response(
+    page: int,
+    page_size: int,
+    refreshing: bool,
+    pending_accounts: int,
+) -> AllEmailListResponse:
+    return AllEmailListResponse(
+        page=page,
+        page_size=page_size,
+        total_emails=0,
+        emails=[],
+        failed_accounts=[],
+        refreshing=refreshing,
+        pending_accounts=pending_accounts,
+    )
+
+
+def update_all_email_cached_read_state(account_email: str, message_id: str) -> None:
+    normalized_account = str(account_email or "")
+    normalized_message_id = str(message_id or "")
+    if not normalized_account or not normalized_message_id:
+        return
+
+    with all_email_cache_lock:
+        for entry in all_email_query_cache.values():
+            response = entry.get("response")
+            if not isinstance(response, AllEmailListResponse):
+                continue
+            changed = False
+            next_emails: list[AllEmailItem] = []
+            for email_item in response.emails:
+                if (
+                    email_item.account_email == normalized_account
+                    and email_item.message_id == normalized_message_id
+                    and not email_item.is_read
+                ):
+                    next_emails.append(email_item.model_copy(update={"is_read": True}))
+                    changed = True
+                else:
+                    next_emails.append(email_item)
+            if changed:
+                entry["response"] = response.model_copy(update={"emails": next_emails})
+
+
+def update_all_email_cached_tag_state(
+    account_email: str,
+    message_id: str,
+    tag_keys: list[str],
+    tag_details: list[ClassificationOption],
+) -> None:
+    normalized_account = str(account_email or "")
+    normalized_message_id = str(message_id or "")
+    normalized_tag_keys = normalize_account_tag_keys(tag_keys)
+    normalized_tag_details = list(tag_details or [])
+    if not normalized_account or not normalized_message_id:
+        return
+
+    with all_email_cache_lock:
+        for entry in all_email_query_cache.values():
+            response = entry.get("response")
+            if not isinstance(response, AllEmailListResponse):
+                continue
+            changed = False
+            next_emails: list[AllEmailItem] = []
+            for email_item in response.emails:
+                if (
+                    email_item.account_email == normalized_account
+                    and email_item.message_id == normalized_message_id
+                ):
+                    next_emails.append(email_item.model_copy(update={
+                        "tag_keys": normalized_tag_keys,
+                        "tag_details": normalized_tag_details,
+                    }))
+                    changed = True
+                else:
+                    next_emails.append(email_item)
+            if changed:
+                entry["response"] = response.model_copy(update={"emails": next_emails})
+
+
+async def collect_account_all_emails(
+    credentials: AccountCredentials,
+    fetch_limit: int,
+    search_term: str,
+    date_from: datetime | None,
+    date_to: datetime | None,
+    refresh: bool,
+) -> tuple[list[AllEmailItem], int]:
+    response = await list_emails(credentials, "all", 1, fetch_limit, refresh)
+    matched_items: list[AllEmailItem] = []
+    account_email = str(credentials.email)
+    catalog = load_account_classifications_data()
+    account_category_key = normalize_account_category_key(credentials.category_key)
+    account_tag_keys = normalize_account_tag_keys(credentials.tag_keys, credentials.tags)
+    account_category = resolve_category_option(account_category_key, catalog)
+    account_tag_details = resolve_tag_options(account_tag_keys, catalog)
+
+    for email_item in response.emails:
+        if not email_item_in_date_range(email_item, date_from, date_to):
+            continue
+        if search_term and search_term not in all_email_basic_search_text(
+            email_item,
+            account_email,
+            account_category,
+            account_tag_details,
+        ):
+            if not await all_email_matches_content(credentials, email_item, search_term):
+                continue
+        matched_items.append(build_all_email_item(
+            account_email,
+            email_item,
+            account_category_key,
+            account_category,
+            account_tag_keys,
+            account_tag_details,
+        ))
+
+    return matched_items, response.total_emails
+
+
+async def refresh_account_emails_to_sqlite(credentials: AccountCredentials) -> int:
+    account_email = str(credentials.email)
+    latest_ts = await asyncio.to_thread(get_all_email_sqlite_account_latest_ts, account_email)
+    response = await list_emails(
+        credentials,
+        "all",
+        1,
+        ALL_EMAIL_SQLITE_REFRESH_LIMIT,
+        True,
+    )
+    fetched_ids = [email_item.message_id for email_item in response.emails]
+    existing_ids = await asyncio.to_thread(
+        get_all_email_sqlite_existing_ids,
+        account_email,
+        fetched_ids,
+    )
+
+    items_to_store: list[EmailItem] = []
+    for email_item in response.emails:
+        item_ts = email_item_datetime_to_timestamp(email_item.date)
+        if latest_ts is not None and item_ts < latest_ts:
+            break
+        if latest_ts is not None and item_ts == latest_ts and email_item.message_id in existing_ids:
+            items_to_store.append(email_item)
+            continue
+        items_to_store.append(email_item)
+
+    return await asyncio.to_thread(upsert_all_email_sqlite_items, account_email, items_to_store)
+
+
+def normalize_all_email_sqlite_concurrency(concurrency: int | None = None) -> int:
+    try:
+        value = int(concurrency if concurrency is not None else 5)
+    except (TypeError, ValueError):
+        value = 5
+    return min(max(value, 1), 50)
+
+
+def utc_now_iso() -> str:
+    return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+
+def get_all_email_sqlite_refresh_status() -> AllEmailSqliteRefreshStatusResponse:
+    with all_email_cache_lock:
+        status = dict(all_email_sqlite_refresh_status)
+        status["failed_accounts"] = list(status.get("failed_accounts") or [])
+        status["account_errors"] = dict(status.get("account_errors") or {})
+    return AllEmailSqliteRefreshStatusResponse(**status)
+
+
+def update_all_email_sqlite_refresh_status(**updates: Any) -> AllEmailSqliteRefreshStatusResponse:
+    with all_email_cache_lock:
+        all_email_sqlite_refresh_status.update(updates)
+    return get_all_email_sqlite_refresh_status()
+
+
+def record_all_email_sqlite_refresh_result(
+    email_id: str,
+    inserted_or_updated: int,
+    error: str | None = None,
+) -> None:
+    with all_email_cache_lock:
+        all_email_sqlite_refresh_status["checked_accounts"] += 1
+        if error:
+            failed_accounts = all_email_sqlite_refresh_status["failed_accounts"]
+            if email_id not in failed_accounts:
+                failed_accounts.append(email_id)
+            all_email_sqlite_refresh_status["account_errors"][email_id] = error
+            return
+        all_email_sqlite_refresh_status["refreshed_accounts"] += 1
+        all_email_sqlite_refresh_status["inserted_or_updated"] += inserted_or_updated
+
+
+def reset_all_email_sqlite_refresh_status_for_tests() -> None:
+    global all_email_sqlite_refresh_task
+    if all_email_sqlite_refresh_task and not all_email_sqlite_refresh_task.done():
+        all_email_sqlite_refresh_task.cancel()
+    all_email_sqlite_refresh_task = None
+    update_all_email_sqlite_refresh_status(
+        task_id=None,
+        running=False,
+        total_accounts=0,
+        checked_accounts=0,
+        refreshed_accounts=0,
+        inserted_or_updated=0,
+        failed_accounts=[],
+        account_errors={},
+        started_at=None,
+        completed_at=None,
+        concurrency=5,
+        trigger="manual",
+        error="",
+    )
+
+
+async def run_all_email_sqlite_refresh_task(
+    task_id: str,
+    account_items: list[tuple[str, dict[str, Any]]],
+    concurrency: int,
+) -> None:
+    semaphore = asyncio.Semaphore(concurrency)
+
+    async def refresh_one(email_id: str, account_data: dict[str, Any]) -> None:
+        async with semaphore:
+            try:
+                credentials = build_account_credentials_from_data(email_id, account_data)
+                updated = await asyncio.wait_for(
+                    refresh_account_emails_to_sqlite(credentials),
+                    timeout=ALL_EMAIL_SQLITE_ACCOUNT_TIMEOUT_SECONDS,
+                )
+                record_all_email_sqlite_refresh_result(email_id, updated)
+            except asyncio.TimeoutError:
+                logger.warning("Timed out refreshing all-email SQLite index for %s", email_id)
+                record_all_email_sqlite_refresh_result(email_id, 0, "刷新超时")
+            except Exception as exc:
+                logger.warning("Failed to refresh all-email SQLite index for %s: %s", email_id, exc)
+                record_all_email_sqlite_refresh_result(email_id, 0, str(exc))
+
+    try:
+        await asyncio.gather(*(refresh_one(email_id, data) for email_id, data in account_items))
+        clear_all_email_query_cache()
+        update_all_email_sqlite_refresh_status(running=False, completed_at=utc_now_iso())
+    except asyncio.CancelledError:
+        update_all_email_sqlite_refresh_status(
+            running=False,
+            completed_at=utc_now_iso(),
+            error="刷新任务已取消",
+        )
+        raise
+    except Exception as exc:
+        logger.exception("All-email SQLite refresh task failed: %s", exc)
+        update_all_email_sqlite_refresh_status(
+            running=False,
+            completed_at=utc_now_iso(),
+            error=str(exc),
+        )
+
+
+async def start_all_email_sqlite_refresh(
+    concurrency: int | None = None,
+    trigger: str = "manual",
+) -> AllEmailSqliteRefreshStatusResponse:
+    global all_email_sqlite_refresh_task
+    with all_email_cache_lock:
+        task = all_email_sqlite_refresh_task
+        if task and not task.done() and all_email_sqlite_refresh_status.get("running"):
+            return get_all_email_sqlite_refresh_status()
+        accounts_data = load_accounts_data()
+        account_items = [
+            (email_id, account_data)
+            for email_id, account_data in accounts_data.items()
+            if isinstance(account_data, dict)
+        ]
+        started_at = utc_now_iso()
+        requested_concurrency = normalize_all_email_sqlite_concurrency(concurrency)
+        effective_concurrency = min(requested_concurrency, max(1, len(account_items)))
+        task_id = secrets.token_hex(8)
+
+        all_email_sqlite_refresh_status.update({
+            "task_id": task_id,
+            "running": bool(account_items),
+            "total_accounts": len(account_items),
+            "checked_accounts": 0,
+            "refreshed_accounts": 0,
+            "inserted_or_updated": 0,
+            "failed_accounts": [],
+            "account_errors": {},
+            "started_at": started_at,
+            "completed_at": None if account_items else started_at,
+            "concurrency": effective_concurrency,
+            "trigger": str(trigger or "manual"),
+            "error": "",
+        })
+        if not account_items:
+            all_email_sqlite_refresh_task = None
+            return get_all_email_sqlite_refresh_status()
+
+        all_email_sqlite_refresh_task = asyncio.create_task(
+            run_all_email_sqlite_refresh_task(task_id, account_items, effective_concurrency)
+    )
+    return get_all_email_sqlite_refresh_status()
+
+
+def get_all_email_sqlite_sync_settings(settings: dict[str, Any] | None = None) -> dict[str, Any]:
+    source = settings or load_site_settings()
+    return {
+        "enabled": bool(source.get("all_email_sqlite_auto_sync_enabled", True)),
+        "concurrency": normalize_int_setting(source.get("all_email_sqlite_sync_concurrency"), 5, 1, 50),
+        "interval_minutes": normalize_int_setting(
+            source.get("all_email_sqlite_auto_sync_interval_minutes"),
+            ALL_EMAIL_SQLITE_AUTO_SYNC_DEFAULT_INTERVAL_MINUTES,
+            1,
+            1440,
+        ),
+    }
+
+
+async def run_all_email_sqlite_auto_sync_once() -> AllEmailSqliteRefreshStatusResponse | None:
+    sync_settings = get_all_email_sqlite_sync_settings()
+    if not sync_settings["enabled"]:
+        return None
+    return await start_all_email_sqlite_refresh(
+        concurrency=sync_settings["concurrency"],
+        trigger="scheduled",
+    )
+
+
+async def run_all_email_sqlite_auto_sync_scheduler() -> None:
+    while True:
+        sync_settings = get_all_email_sqlite_sync_settings()
+        await asyncio.sleep(sync_settings["interval_minutes"] * 60)
+        try:
+            await run_all_email_sqlite_auto_sync_once()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("Scheduled all-email SQLite sync failed: %s", exc)
+
+
+def start_all_email_sqlite_auto_sync_scheduler() -> None:
+    global all_email_sqlite_auto_sync_task
+    if all_email_sqlite_auto_sync_task and not all_email_sqlite_auto_sync_task.done():
+        return
+    all_email_sqlite_auto_sync_task = asyncio.create_task(run_all_email_sqlite_auto_sync_scheduler())
+
+
+async def stop_all_email_sqlite_auto_sync_scheduler() -> None:
+    global all_email_sqlite_auto_sync_task
+    task = all_email_sqlite_auto_sync_task
+    if task and not task.done():
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    all_email_sqlite_auto_sync_task = None
+
+
+async def refresh_all_account_emails_to_sqlite(concurrency: int | None = None) -> AllEmailSqliteRefreshResponse:
+    accounts_data = load_accounts_data()
+    account_items = [
+        (email_id, account_data)
+        for email_id, account_data in accounts_data.items()
+        if isinstance(account_data, dict)
+    ]
+    started_at = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    if not account_items:
+        return AllEmailSqliteRefreshResponse(
+            total_accounts=0,
+            refreshed_accounts=0,
+            inserted_or_updated=0,
+            failed_accounts=[],
+            started_at=started_at,
+            completed_at=datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+        )
+
+    effective_concurrency = min(normalize_all_email_sqlite_concurrency(concurrency), len(account_items))
+    semaphore = asyncio.Semaphore(effective_concurrency)
+
+    async def refresh_one(email_id: str, account_data: dict[str, Any]) -> tuple[int, str | None]:
+        async with semaphore:
+            try:
+                credentials = build_account_credentials_from_data(email_id, account_data)
+                updated = await asyncio.wait_for(
+                    refresh_account_emails_to_sqlite(credentials),
+                    timeout=ALL_EMAIL_SQLITE_ACCOUNT_TIMEOUT_SECONDS,
+                )
+                return updated, None
+            except asyncio.TimeoutError:
+                logger.warning("Timed out refreshing all-email SQLite index for %s", email_id)
+                return 0, email_id
+            except Exception as exc:
+                logger.warning("Failed to refresh all-email SQLite index for %s: %s", email_id, exc)
+                return 0, email_id
+
+    results = await asyncio.gather(
+        *(refresh_one(email_id, account_data) for email_id, account_data in account_items)
+    )
+    failed_accounts = [failed for _updated, failed in results if failed]
+    inserted_or_updated = sum(updated for updated, _failed in results)
+    clear_all_email_query_cache()
+
+    return AllEmailSqliteRefreshResponse(
+        total_accounts=len(account_items),
+        refreshed_accounts=len(account_items) - len(failed_accounts),
+        inserted_or_updated=inserted_or_updated,
+        failed_accounts=failed_accounts,
+        started_at=started_at,
+        completed_at=datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+    )
+
+
+async def fetch_all_account_emails_response(
+    page: int,
+    page_size: int,
+    search: str | None = None,
+    date_from_value: str | None = None,
+    date_to_value: str | None = None,
+    refresh: bool = False,
+) -> AllEmailListResponse:
+    accounts_data = load_accounts_data()
+    if not accounts_data:
+        return AllEmailListResponse(page=page, page_size=page_size, total_emails=0, emails=[])
+
+    search_term = str(search or "").strip().lower()
+    date_from = parse_iso_datetime_for_filter(date_from_value)
+    date_to = parse_iso_datetime_for_filter(date_to_value, end_of_day=True)
+    if date_from and date_to and date_from > date_to:
+        raise HTTPException(status_code=400, detail="date_from cannot be later than date_to")
+    has_filters = bool(search_term or date_from or date_to)
+    fetch_limit = 500 if has_filters else min(max(page * page_size, page_size), 500)
+    semaphore = asyncio.Semaphore(min(ALL_EMAIL_ACCOUNT_CONCURRENCY, max(1, len(accounts_data))))
+
+    async def collect(email_id: str, account_data: dict[str, Any]) -> tuple[list[AllEmailItem], int, str | None]:
+        async with semaphore:
+            try:
+                credentials = build_account_credentials_from_data(email_id, account_data)
+                items, total = await asyncio.wait_for(
+                    collect_account_all_emails(
+                        credentials,
+                        fetch_limit,
+                        search_term,
+                        date_from,
+                        date_to,
+                        refresh,
+                    ),
+                    timeout=ALL_EMAIL_ACCOUNT_TIMEOUT_SECONDS,
+                )
+                return items, total, None
+            except asyncio.TimeoutError:
+                logger.warning("Timed out collecting all emails for %s", email_id)
+                return [], 0, email_id
+            except Exception as exc:
+                logger.warning("Failed to collect all emails for %s: %s", email_id, exc)
+                return [], 0, email_id
+
+    tasks = [collect(email_id, data) for email_id, data in accounts_data.items() if isinstance(data, dict)]
+    results = await asyncio.gather(*tasks)
+    all_items = [item for items, _total, _failed in results for item in items]
+    all_items.sort(key=lambda item: parse_email_item_datetime(item.date), reverse=True)
+
+    start_index = (page - 1) * page_size
+    end_index = start_index + page_size
+    total_emails = len(all_items) if has_filters else sum(total for _items, total, _failed in results)
+    failed_accounts = [failed for _items, _total, failed in results if failed]
+
+    return AllEmailListResponse(
+        page=page,
+        page_size=page_size,
+        total_emails=total_emails,
+        emails=all_items[start_index:end_index],
+        failed_accounts=failed_accounts,
+    )
+
+
+async def refresh_all_email_query_cache(
+    cache_key: str,
+    page: int,
+    page_size: int,
+    search: str | None,
+    date_from_value: str | None,
+    date_to_value: str | None,
+    refresh: bool,
+) -> None:
+    try:
+        response = await fetch_all_account_emails_response(
+            page,
+            page_size,
+            search,
+            date_from_value,
+            date_to_value,
+            refresh,
+        )
+        set_all_email_cache_entry(cache_key, response)
+    finally:
+        current_task = asyncio.current_task()
+        with all_email_cache_lock:
+            if all_email_refresh_tasks.get(cache_key) is current_task:
+                all_email_refresh_tasks.pop(cache_key, None)
+
+
+def ensure_all_email_refresh_task(
+    cache_key: str,
+    page: int,
+    page_size: int,
+    search: str | None,
+    date_from_value: str | None,
+    date_to_value: str | None,
+    refresh: bool,
+) -> asyncio.Task:
+    with all_email_cache_lock:
+        existing_task = all_email_refresh_tasks.get(cache_key)
+        if existing_task and not existing_task.done():
+            return existing_task
+        task = asyncio.create_task(refresh_all_email_query_cache(
+            cache_key,
+            page,
+            page_size,
+            search,
+            date_from_value,
+            date_to_value,
+            refresh,
+        ))
+        all_email_refresh_tasks[cache_key] = task
+        return task
+
+
+async def list_all_account_emails(
+    page: int,
+    page_size: int,
+    search: str | None = None,
+    date_from_value: str | None = None,
+    date_to_value: str | None = None,
+    refresh: bool = False,
+) -> AllEmailListResponse:
+    _ = refresh
+    return await asyncio.to_thread(
+        query_all_email_sqlite_response,
+        page,
+        page_size,
+        search,
+        date_from_value,
+        date_to_value,
     )
 
 
@@ -1221,6 +2348,7 @@ async def save_account_credentials(email_id: str, credentials: AccountCredential
                 ),
             }
             _write_json_file(ACCOUNTS_FILE, accounts)
+        clear_all_email_query_cache()
         logger.info(f"Account credentials saved for {email_id}")
     except Exception as e:
         logger.error(f"Error saving account credentials: {e}")
@@ -1587,8 +2715,19 @@ def get_default_site_settings() -> dict[str, Any]:
         "turnstile_secret_key": "",
         "turnstile_enabled_for_admin_login": False,
         "turnstile_enabled_for_public_access": False,
+        "all_email_sqlite_auto_sync_enabled": ALL_EMAIL_SQLITE_AUTO_SYNC_DEFAULT_ENABLED,
+        "all_email_sqlite_sync_concurrency": 5,
+        "all_email_sqlite_auto_sync_interval_minutes": ALL_EMAIL_SQLITE_AUTO_SYNC_DEFAULT_INTERVAL_MINUTES,
         "updated_at": None,
     }
+
+
+def normalize_int_setting(value: Any, default: int, min_value: int, max_value: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return min(max(parsed, min_value), max_value)
 
 
 def normalize_admin_login_path(value: str | None) -> str:
@@ -1738,6 +2877,22 @@ def load_site_settings() -> dict[str, Any]:
             "turnstile_secret_key": normalize_turnstile_value(data.get("turnstile_secret_key")),
             "turnstile_enabled_for_admin_login": bool(data.get("turnstile_enabled_for_admin_login", False)),
             "turnstile_enabled_for_public_access": bool(data.get("turnstile_enabled_for_public_access", False)),
+            "all_email_sqlite_auto_sync_enabled": bool(data.get(
+                "all_email_sqlite_auto_sync_enabled",
+                defaults["all_email_sqlite_auto_sync_enabled"],
+            )),
+            "all_email_sqlite_sync_concurrency": normalize_int_setting(
+                data.get("all_email_sqlite_sync_concurrency"),
+                defaults["all_email_sqlite_sync_concurrency"],
+                1,
+                50,
+            ),
+            "all_email_sqlite_auto_sync_interval_minutes": normalize_int_setting(
+                data.get("all_email_sqlite_auto_sync_interval_minutes"),
+                defaults["all_email_sqlite_auto_sync_interval_minutes"],
+                1,
+                1440,
+            ),
             "updated_at": data.get("updated_at"),
         }
 
@@ -1779,6 +2934,19 @@ def save_site_settings(settings: dict[str, Any]) -> dict[str, Any]:
         "turnstile_secret_key": normalize_turnstile_value(settings.get("turnstile_secret_key")),
         "turnstile_enabled_for_admin_login": bool(settings.get("turnstile_enabled_for_admin_login", False)),
         "turnstile_enabled_for_public_access": bool(settings.get("turnstile_enabled_for_public_access", False)),
+        "all_email_sqlite_auto_sync_enabled": bool(settings.get("all_email_sqlite_auto_sync_enabled", True)),
+        "all_email_sqlite_sync_concurrency": normalize_int_setting(
+            settings.get("all_email_sqlite_sync_concurrency"),
+            5,
+            1,
+            50,
+        ),
+        "all_email_sqlite_auto_sync_interval_minutes": normalize_int_setting(
+            settings.get("all_email_sqlite_auto_sync_interval_minutes"),
+            ALL_EMAIL_SQLITE_AUTO_SYNC_DEFAULT_INTERVAL_MINUTES,
+            1,
+            1440,
+        ),
         "updated_at": datetime.utcnow().isoformat(),
     }
     if not payload["share_domain"]:
@@ -2697,6 +3865,31 @@ async def graph_api_get(access_token: str, path: str, params: dict[str, Any] | N
         raise HTTPException(status_code=500, detail="Network error during Graph API request")
 
 
+async def graph_api_patch(access_token: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.patch(
+                f"{GRAPH_API_BASE_URL}{path}",
+                headers=build_graph_headers(access_token),
+                json=payload,
+            )
+            response.raise_for_status()
+            if not response.content:
+                return {}
+            return response.json()
+    except httpx.HTTPStatusError as e:
+        detail = extract_graph_error_detail(e.response)
+        logger.error("Graph API HTTP %s error for %s: %s", e.response.status_code, path, detail)
+        if e.response.status_code in {401, 403}:
+            raise HTTPException(status_code=401, detail=detail)
+        if e.response.status_code == 404:
+            raise HTTPException(status_code=404, detail=detail)
+        raise HTTPException(status_code=500, detail=detail)
+    except httpx.RequestError as e:
+        logger.error(f"Graph API request error for {path}: {e}")
+        raise HTTPException(status_code=500, detail="Network error during Graph API request")
+
+
 def format_graph_email_address(address_payload: dict[str, Any] | None) -> str:
     if not isinstance(address_payload, dict):
         return ""
@@ -3190,6 +4383,8 @@ async def list_emails(credentials: AccountCredentials, folder: str, page: int, p
                         if not match:
                             continue
                         fetched_msg_id = match.group(1)
+                        flags_blob = msg_data[i][0] if isinstance(msg_data[i][0], bytes) else b""
+                        is_read = b"\\Seen" in flags_blob
 
                         msg = email.message_from_bytes(header_data)
                         
@@ -3221,7 +4416,7 @@ async def list_emails(credentials: AccountCredentials, folder: str, page: int, p
                             subject=subject,
                             from_email=from_email,
                             date=formatted_date,
-                            is_read=False,  # 简化处理，实际可通过IMAP flags判断
+                            is_read=is_read,
                             has_attachments=False,  # 简化处理，实际需要检查邮件结构
                             sender_initial=sender_initial,
                             sender_avatar_url=build_sender_avatar_url(from_email),
@@ -3316,6 +4511,80 @@ async def get_graph_email_details(credentials: AccountCredentials, message_id: s
     ))
 
 
+async def mark_graph_email_as_read(credentials: AccountCredentials, message_id: str) -> None:
+    parsed_message = parse_graph_message_id(message_id)
+    if not parsed_message:
+        raise HTTPException(status_code=400, detail="Invalid Graph message_id format")
+
+    _folder_name, graph_message_id = parsed_message
+    access_token = await get_access_token(credentials)
+    await graph_api_patch(
+        access_token,
+        f"/me/messages/{quote(graph_message_id, safe='')}",
+        {"isRead": True},
+    )
+
+
+async def mark_imap_email_as_read(credentials: AccountCredentials, message_id: str) -> None:
+    try:
+        folder_name, msg_id = message_id.split('-', 1)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid message_id format")
+
+    access_token = await get_access_token(credentials)
+
+    def _sync_mark_imap_email_as_read():
+        imap_client = None
+        try:
+            imap_client = imap_pool.get_connection(credentials.email, access_token)
+            imap_client.select(folder_name)
+            status, _data = imap_client.store(msg_id, '+FLAGS.SILENT', r'(\Seen)')
+            if status != 'OK':
+                raise HTTPException(status_code=500, detail="Failed to mark email as read")
+            imap_pool.return_connection(credentials.email, imap_client)
+        except HTTPException:
+            if imap_client:
+                try:
+                    imap_pool.return_connection(credentials.email, imap_client)
+                except Exception:
+                    pass
+            raise
+        except Exception as e:
+            logger.error(f"Error marking email as read: {e}")
+            if imap_client:
+                try:
+                    if hasattr(imap_client, 'state') and imap_client.state != 'LOGOUT':
+                        imap_pool.return_connection(credentials.email, imap_client)
+                except Exception:
+                    pass
+            raise HTTPException(status_code=500, detail="Failed to mark email as read")
+
+    await asyncio.to_thread(_sync_mark_imap_email_as_read)
+
+
+async def mark_email_as_read(credentials: AccountCredentials, message_id: str) -> None:
+    """将邮件标记为已读，并清理该账户列表缓存。"""
+    if normalize_account_auth_method(credentials.auth_method) == "graph":
+        await mark_graph_email_as_read(credentials, message_id)
+    else:
+        await mark_imap_email_as_read(credentials, message_id)
+    clear_email_cache(str(credentials.email))
+    update_all_email_cached_read_state(str(credentials.email), message_id)
+    await asyncio.to_thread(update_all_email_sqlite_read_state, str(credentials.email), message_id)
+
+
+async def mark_email_as_read_after_view(credentials: AccountCredentials, message_id: str) -> None:
+    try:
+        await mark_email_as_read(credentials, message_id)
+    except HTTPException as exc:
+        logger.warning(
+            "Failed to mark email as read for %s/%s: %s",
+            credentials.email,
+            message_id,
+            exc.detail,
+        )
+
+
 async def get_email_details(credentials: AccountCredentials, message_id: str) -> EmailDetailsResponse:
     """获取邮件详细内容 - 优化版本"""
     if normalize_account_auth_method(credentials.auth_method) == "graph":
@@ -3338,8 +4607,8 @@ async def get_email_details(credentials: AccountCredentials, message_id: str) ->
             # 选择正确的文件夹
             imap_client.select(folder_name)
             
-            # 获取完整邮件内容
-            status, msg_data = imap_client.fetch(msg_id, '(RFC822)')
+            # 只读取详情内容，不隐式设置 \Seen；打开详情后的已读状态由路由显式写入。
+            status, msg_data = imap_client.fetch(msg_id, '(BODY.PEEK[])')
             
             if status != 'OK' or not msg_data:
                 raise HTTPException(status_code=404, detail="Email not found")
@@ -3467,18 +4736,24 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
         raise RuntimeError(f"Site settings path is a directory, expected a file: {SITE_SETTINGS_FILE}")
     if not SITE_SETTINGS_FILE.exists():
         _write_json_file(SITE_SETTINGS_FILE, get_default_site_settings())
+    if ALL_EMAIL_SQLITE_FILE.exists() and ALL_EMAIL_SQLITE_FILE.is_dir():
+        raise RuntimeError(f"All-email SQLite path is a directory, expected a file: {ALL_EMAIL_SQLITE_FILE}")
+    initialize_all_email_sqlite()
+    start_all_email_sqlite_auto_sync_scheduler()
     ICON_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cleanup_expired_sessions()
     cleanup_expired_open_access()
     cleanup_expired_admin_login_attempts()
 
-    yield
-
-    # 应用关闭
-    logger.info("Shutting down Microsoft-Email-Manager...")
-    logger.info("Closing IMAP connection pool...")
-    imap_pool.close_all_connections()
-    logger.info("Application shutdown complete.")
+    try:
+        yield
+    finally:
+        # 应用关闭
+        logger.info("Shutting down Microsoft-Email-Manager...")
+        await stop_all_email_sqlite_auto_sync_scheduler()
+        logger.info("Closing IMAP connection pool...")
+        imap_pool.close_all_connections()
+        logger.info("Application shutdown complete.")
 
 
 app = FastAPI(
@@ -3548,7 +4823,7 @@ async def site_access_middleware(request: Request, call_next):
             return csrf_violation
 
     if request.method in {"GET", "HEAD"} and (path == admin_path or path.startswith(admin_path + "/")):
-        return FileResponse(STATIC_DIR / "index.html")
+        return html_file_response("index.html")
 
     return await call_next(request)
 
@@ -3991,6 +5266,7 @@ async def get_open_email_detail(email_id: str, message_id: str, request: Request
     details = await get_email_details(credentials, message_id)
     if not email_matches_recipient(details, credentials.email):
         raise HTTPException(status_code=404, detail="Email not found")
+    await mark_email_as_read_after_view(credentials, message_id)
     return details
 
 
@@ -4117,6 +5393,42 @@ async def get_account_credential_formats(email_id: str, request: Request):
     )
 
 
+@app.get("/all-emails", response_model=AllEmailListResponse)
+async def get_all_emails(
+    request: Request,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=100),
+    search: Optional[str] = Query(None, max_length=200),
+    date_from: Optional[str] = Query(None, max_length=40),
+    date_to: Optional[str] = Query(None, max_length=40),
+    refresh: bool = Query(False, description="强制刷新缓存"),
+):
+    """从 SQLite 本地索引获取全部账户邮件，按收件时间倒序聚合。"""
+    require_authenticated(request, allow_api_key=True)
+    return await list_all_account_emails(page, page_size, search, date_from, date_to, refresh)
+
+
+@app.post("/all-emails/refresh-sqlite", response_model=AllEmailSqliteRefreshStatusResponse)
+async def refresh_all_emails_sqlite(
+    request: Request,
+    payload: Optional[AllEmailSqliteRefreshRequest] = None,
+):
+    """启动后台任务，按账户最新时间戳增量刷新全部邮件到 SQLite。"""
+    require_authenticated(request, allow_api_key=True)
+    sync_settings = get_all_email_sqlite_sync_settings()
+    return await start_all_email_sqlite_refresh(
+        concurrency=sync_settings["concurrency"],
+        trigger="manual",
+    )
+
+
+@app.get("/all-emails/refresh-sqlite/status", response_model=AllEmailSqliteRefreshStatusResponse)
+async def get_all_emails_sqlite_refresh_status(request: Request):
+    """获取全部邮件 SQLite 后台刷新状态。"""
+    require_authenticated(request, allow_api_key=True)
+    return get_all_email_sqlite_refresh_status()
+
+
 @app.get("/emails/{email_id}", response_model=EmailListResponse)
 async def get_emails(
     request: Request,
@@ -4200,7 +5512,9 @@ async def get_email_detail(email_id: str, message_id: str, request: Request):
     require_authenticated(request, allow_api_key=True)
     """获取邮件详细内容"""
     credentials = await get_account_credentials(email_id)
-    return await get_email_details(credentials, message_id)
+    details = await get_email_details(credentials, message_id)
+    await mark_email_as_read_after_view(credentials, message_id)
+    return details
 
 
 @app.put("/emails/{email_id}/{message_id}/tags", response_model=EmailTagUpdateResponse)
@@ -4212,6 +5526,7 @@ async def update_email_tags(email_id: str, message_id: str, payload: UpdateEmail
     catalog = load_account_classifications_data()
     validate_catalog_references(None, tag_keys, catalog)
     set_email_tag_keys(email_id, message_id, tag_keys)
+    clear_all_email_query_cache()
     clear_email_cache(email_id)
 
     return EmailTagUpdateResponse(
@@ -4252,6 +5567,8 @@ async def delete_account(email_id: str, request: Request):
             del email_tags_data["emails"][email_id]
             save_email_tags_data(email_tags_data)
         revoke_open_access_sessions(email_id)
+        delete_all_email_sqlite_account(email_id)
+        clear_all_email_query_cache()
         
         return AccountResponse(
             email_id=email_id,
@@ -4266,7 +5583,7 @@ async def delete_account(email_id: str, request: Request):
 
 @app.get("/open/emails/{email_id}")
 async def open_email_page(email_id: str):
-    return FileResponse(STATIC_DIR / "open.html")
+    return html_file_response("open.html")
 
 @app.get("/")
 async def root(request: Request):
@@ -4277,16 +5594,17 @@ async def root(request: Request):
     if share_domain_enabled and hosts_match(get_request_host(request), share_domain):
         if not auth_is_configured():
             return PlainTextResponse("Not Found", status_code=404)
-        return FileResponse(STATIC_DIR / "home.html")
+        return html_file_response("home.html")
     if not auth_is_configured():
-        return FileResponse(STATIC_DIR / "index.html")
-    return FileResponse(STATIC_DIR / "home.html")
+        return html_file_response("index.html")
+    return html_file_response("home.html")
 
 @app.delete("/cache/{email_id}")
 async def clear_cache(email_id: str, request: Request):
     """清除指定邮箱的缓存"""
     require_authenticated(request, allow_api_key=True)
     clear_email_cache(email_id)
+    clear_all_email_query_cache()
     return {"message": f"Cache cleared for {email_id}"}
 
 @app.delete("/cache")
@@ -4294,6 +5612,7 @@ async def clear_all_cache(request: Request):
     """清除所有缓存"""
     require_authenticated(request, allow_api_key=True)
     clear_email_cache()
+    clear_all_email_query_cache()
     return {"message": "All cache cleared"}
 
 @app.get("/favicon.ico", include_in_schema=False)
