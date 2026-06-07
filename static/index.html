@@ -386,6 +386,43 @@
             margin-left: 12px;
         }
 
+        /* 主题与已读/未读角标同处左侧，日期保持右对齐 */
+        .email-subject-line {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            min-width: 0;
+        }
+
+        /* 已读/未读角标（pill），用更突出的色块区分阅读状态 */
+        .email-read-badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 2px 10px;
+            border-radius: 999px;
+            font-size: 0.72rem;
+            font-weight: 600;
+            line-height: 1.4;
+            flex-shrink: 0;
+        }
+
+        .email-read-badge.is-unread {
+            background: rgba(37, 99, 235, 0.12);
+            color: var(--ui-brand-strong);
+        }
+
+        .email-read-badge.is-read {
+            background: #f1f5f9;
+            color: #64748b;
+        }
+
+        /* 全部邮件列表行内「快捷绑定」按钮，靠右对齐，不被标签 chip 挤压 */
+        .all-email-bind-btn {
+            margin-left: auto;
+            flex-shrink: 0;
+            padding: 4px 10px;
+        }
+
         .email-from {
             font-size: 0.75rem;
             color: #64748b;
@@ -462,6 +499,13 @@
             display: grid;
             grid-template-columns: repeat(2, minmax(0, 1fr));
             gap: 12px;
+        }
+
+        /* 邮件详情操作区（快捷绑定等） */
+        .email-detail-actions {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 20px;
         }
 
         .email-detail-meta-item {
@@ -5705,6 +5749,11 @@
                             <input type="text" class="search-input" id="allEmailSearchInput" placeholder="搜索主题、发件人、收件人或收件邮箱..." onkeypress="handleAllEmailSearchKeyPress(event)">
                         </div>
 
+                        <label class="public-share-inline" style="margin-bottom: 12px; gap: 8px;">
+                            <input type="checkbox" id="allEmailFilterAliasToggle" checked onchange="toggleAllEmailAliasFilter(this.checked)">
+                            <span>过滤别名邮件（仅显示收件人匹配所属账户的邮件）</span>
+                        </label>
+
                         <div class="filter-container all-email-filter-grid">
                             <div class="filter-group">
                                 <label class="filter-label">开始时间</label>
@@ -5713,6 +5762,26 @@
                             <div class="filter-group">
                                 <label class="filter-label">结束时间</label>
                                 <input type="date" class="filter-select filter-date-input" id="allEmailDateTo">
+                            </div>
+                            <div class="filter-group">
+                                <label class="filter-label">分类</label>
+                                <select class="filter-select" id="allEmailCategoryFilter">
+                                    <option value="">全部分类</option>
+                                </select>
+                            </div>
+                            <div class="filter-group">
+                                <label class="filter-label">标签</label>
+                                <select class="filter-select" id="allEmailTagFilter">
+                                    <option value="">全部标签</option>
+                                </select>
+                            </div>
+                            <div class="filter-group">
+                                <label class="filter-label">状态</label>
+                                <select class="filter-select" id="allEmailReadFilter">
+                                    <option value="">全部状态</option>
+                                    <option value="unread">未读</option>
+                                    <option value="read">已读</option>
+                                </select>
                             </div>
                             <div class="filter-actions">
                                 <button class="btn btn-primary btn-sm" type="button" onclick="searchAllEmails()">
@@ -6658,8 +6727,13 @@ example3@outlook.com----password3----client_id3----refresh_token3"></textarea>
                                 </div>
                                 <div class="form-group">
                                     <label class="form-label" for="siteSettingsAllEmailAutoSyncIntervalMinutes">定时同步间隔（分钟）</label>
-                                    <input type="number" id="siteSettingsAllEmailAutoSyncIntervalMinutes" class="form-input" min="1" max="1440" step="1" value="10" inputmode="numeric">
-                                    <div class="public-share-help">默认 10 分钟。设置保存后，服务端调度器会在下一轮读取新配置。</div>
+                                    <input type="number" id="siteSettingsAllEmailAutoSyncIntervalMinutes" class="form-input" min="1" max="1440" step="1" value="30" inputmode="numeric">
+                                    <div class="public-share-help">默认 30 分钟。设置保存后，服务端调度器会在下一轮读取新配置。</div>
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label" for="siteSettingsAllEmailRetentionDays">邮件保留天数</label>
+                                    <input type="number" id="siteSettingsAllEmailRetentionDays" class="form-input" min="1" max="3650" step="1" value="30" inputmode="numeric">
+                                    <div class="public-share-help">默认 30 天。同步时只保留最近 N 天的邮件，更早的会从本地 SQLite 索引中裁剪。</div>
                                 </div>
                                 <div class="api-docs-auth-box">
                                     <p class="api-description" style="margin-bottom: 10px;">手动触发说明</p>
@@ -7197,6 +7271,7 @@ example3@outlook.com----password3----client_id3----refresh_token3"></textarea>
         let isRefreshingAllEmailsToSqlite = false;
         let allEmailsActiveSyncTaskId = null;
         let filterAliasEmailsEnabled = true;
+        let filterAliasAllEmailsEnabled = true;   // 全部邮件页：过滤别名邮件，默认开
         const AUTO_REFRESH_INTERVAL_MS = 5000;
         const AUTO_REFRESH_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
         const ACCOUNTS_PAGE_SIZE_STORAGE_KEY = 'outlookmanager-accounts-page-size';
@@ -7352,8 +7427,8 @@ example3@outlook.com----password3----client_id3----refresh_token3"></textarea>
             select.innerHTML = options.join('');
         }
 
-        function populateTagFilterSelect(selectedKey = currentTagSearch) {
-            const select = document.getElementById('tagSearch');
+        function populateTagFilterSelect(selectedKey = currentTagSearch, elementId = 'tagSearch') {
+            const select = document.getElementById(elementId);
             if (!select) return;
             const tags = Array.isArray(classifications.tags) ? classifications.tags : [];
             const normalizedSelected = normalizeKey(selectedKey);
@@ -8759,6 +8834,13 @@ example3@outlook.com----password3----client_id3----refresh_token3"></textarea>
                 loadClassifications().catch(error => console.warn('Unable to load classifications', error));
                 loadAccounts();
             } else if (pageName === 'allEmails') {
+                loadClassifications().then(() => {
+                    // 填充分类/标签筛选下拉，保留当前已选值
+                    const categorySelect = document.getElementById('allEmailCategoryFilter');
+                    const tagSelect = document.getElementById('allEmailTagFilter');
+                    populateCategorySelect('allEmailCategoryFilter', categorySelect ? categorySelect.value : '', true, '全部分类');
+                    populateTagFilterSelect(tagSelect ? tagSelect.value : '', 'allEmailTagFilter');
+                }).catch(error => console.warn('Unable to load classifications', error));
                 loadAllEmails();
                 loadAllEmailSqliteRefreshStatus({ notifyOnComplete: false });
             } else if (pageName === 'addAccount') {
@@ -11234,7 +11316,7 @@ Authorization: Bearer om_your_api_key
             const shareDomainTurnstileEnabled = shareEnabled && !!config.share_domain_turnstile_enabled && shareDomainTurnstileConfigured;
             const allEmailAutoSyncEnabled = config.all_email_sqlite_auto_sync_enabled !== false;
             const allEmailSyncConcurrency = Number(config.all_email_sqlite_sync_concurrency || 5);
-            const allEmailSyncInterval = Number(config.all_email_sqlite_auto_sync_interval_minutes || 10);
+            const allEmailSyncInterval = Number(config.all_email_sqlite_auto_sync_interval_minutes || 30);
             const allEmailSyncText = allEmailAutoSyncEnabled
                 ? `已开启，间隔 ${allEmailSyncInterval} 分钟，线程数 ${allEmailSyncConcurrency}`
                 : `已关闭，手动同步线程数 ${allEmailSyncConcurrency}`;
@@ -11306,7 +11388,8 @@ Authorization: Bearer om_your_api_key
                 document.getElementById('siteSettingsTurnstilePublicEnabled').checked = !!config.turnstile_enabled_for_public_access;
                 document.getElementById('siteSettingsAllEmailAutoSyncEnabled').checked = config.all_email_sqlite_auto_sync_enabled !== false;
                 document.getElementById('siteSettingsAllEmailSyncConcurrency').value = String(config.all_email_sqlite_sync_concurrency || 5);
-                document.getElementById('siteSettingsAllEmailAutoSyncIntervalMinutes').value = String(config.all_email_sqlite_auto_sync_interval_minutes || 10);
+                document.getElementById('siteSettingsAllEmailAutoSyncIntervalMinutes').value = String(config.all_email_sqlite_auto_sync_interval_minutes || 30);
+                document.getElementById('siteSettingsAllEmailRetentionDays').value = String(config.all_email_sqlite_retention_days || 30);
                 toggleShareDomainSettings();
                 renderSiteSettingsStatus(config);
                 if (showReloadMessage) {
@@ -11337,6 +11420,7 @@ Authorization: Bearer om_your_api_key
             const allEmailAutoSyncEnabled = document.getElementById('siteSettingsAllEmailAutoSyncEnabled').checked;
             const allEmailSyncConcurrency = Number.parseInt(document.getElementById('siteSettingsAllEmailSyncConcurrency').value, 10);
             const allEmailAutoSyncIntervalMinutes = Number.parseInt(document.getElementById('siteSettingsAllEmailAutoSyncIntervalMinutes').value, 10);
+            const allEmailRetentionDays = Number.parseInt(document.getElementById('siteSettingsAllEmailRetentionDays').value, 10);
             const previousAdminPath = getAdminBasePath();
 
             if (!homeTitle) {
@@ -11375,6 +11459,10 @@ Authorization: Bearer om_your_api_key
                 showNotification('全部邮件定时同步间隔需为 1 到 1440 分钟的整数', 'warning');
                 return;
             }
+            if (!Number.isInteger(allEmailRetentionDays) || allEmailRetentionDays < 1 || allEmailRetentionDays > 3650) {
+                showNotification('全部邮件保留天数需为 1 到 3650 天的整数', 'warning');
+                return;
+            }
 
             saveBtn.disabled = true;
             saveBtn.innerHTML = buttonLabel('loading', '保存中...', 'spinning');
@@ -11397,7 +11485,8 @@ Authorization: Bearer om_your_api_key
                         turnstile_enabled_for_public_access: shareDomainTurnstileEnabled ? false : turnstilePublicEnabled,
                         all_email_sqlite_auto_sync_enabled: allEmailAutoSyncEnabled,
                         all_email_sqlite_sync_concurrency: allEmailSyncConcurrency,
-                        all_email_sqlite_auto_sync_interval_minutes: allEmailAutoSyncIntervalMinutes
+                        all_email_sqlite_auto_sync_interval_minutes: allEmailAutoSyncIntervalMinutes,
+                        all_email_sqlite_retention_days: allEmailRetentionDays
                     })
                 });
 
@@ -11415,7 +11504,8 @@ Authorization: Bearer om_your_api_key
                 document.getElementById('siteSettingsTurnstilePublicEnabled').checked = !!config.turnstile_enabled_for_public_access;
                 document.getElementById('siteSettingsAllEmailAutoSyncEnabled').checked = config.all_email_sqlite_auto_sync_enabled !== false;
                 document.getElementById('siteSettingsAllEmailSyncConcurrency').value = String(config.all_email_sqlite_sync_concurrency || 5);
-                document.getElementById('siteSettingsAllEmailAutoSyncIntervalMinutes').value = String(config.all_email_sqlite_auto_sync_interval_minutes || 10);
+                document.getElementById('siteSettingsAllEmailAutoSyncIntervalMinutes').value = String(config.all_email_sqlite_auto_sync_interval_minutes || 30);
+                document.getElementById('siteSettingsAllEmailRetentionDays').value = String(config.all_email_sqlite_retention_days || 30);
                 toggleShareDomainSettings();
                 renderSiteSettingsStatus(config, '设置已保存，主页介绍、后台入口、公开分享域名、Turnstile 和全部邮件同步配置都已更新。');
                 showNotification('站点设置已保存', 'success');
@@ -11659,7 +11749,10 @@ Authorization: Bearer om_your_api_key
             return {
                 search: document.getElementById('allEmailSearchInput').value.trim(),
                 dateFrom: document.getElementById('allEmailDateFrom').value,
-                dateTo: document.getElementById('allEmailDateTo').value
+                dateTo: document.getElementById('allEmailDateTo').value,
+                category: document.getElementById('allEmailCategoryFilter').value,
+                tag: document.getElementById('allEmailTagFilter').value,
+                readStatus: document.getElementById('allEmailReadFilter').value
             };
         }
 
@@ -11673,7 +11766,17 @@ Authorization: Bearer om_your_api_key
             if (filters.search) params.append('search', filters.search);
             if (filters.dateFrom) params.append('date_from', filters.dateFrom);
             if (filters.dateTo) params.append('date_to', filters.dateTo);
+            if (filters.category) params.append('category', filters.category);
+            if (filters.tag) params.append('tag', filters.tag);
+            if (filters.readStatus) params.append('read_status', filters.readStatus);
+            params.append('filter_aliases', filterAliasAllEmailsEnabled ? 'true' : 'false');
             return `/all-emails?${params.toString()}`;
+        }
+
+        function toggleAllEmailAliasFilter(checked) {
+            filterAliasAllEmailsEnabled = !!checked;
+            currentAllEmailsPage = 1;
+            loadAllEmails();
         }
 
         function setAllEmailRefreshButtonState(isBusy = false, label = '刷新邮件到 SQLite') {
@@ -11948,7 +12051,10 @@ Authorization: Bearer om_your_api_key
                     ${renderSenderAvatar(email.sender_initial || sender.initial, senderLogoUrl, 'email-avatar', email.sender_avatar_url)}
                     <div class="email-content">
                         <div class="email-header">
-                            <div class="email-subject">${escapeHtml(email.subject || '(无主题)')}</div>
+                            <div class="email-subject-line">
+                                <span class="email-read-badge ${email.is_read ? 'is-read' : 'is-unread'}">${email.is_read ? '已读' : '未读'}</span>
+                                <div class="email-subject">${escapeHtml(email.subject || '(无主题)')}</div>
+                            </div>
                             <div class="email-date">${escapeHtml(formatEmailDate(email.date))}</div>
                         </div>
                         <div class="email-from">
@@ -11962,7 +12068,7 @@ Authorization: Bearer om_your_api_key
                             <span>状态：<strong>${escapeHtml(readLabel)}</strong></span>
                             <span>文件夹：<strong>${escapeHtml(email.folder || '-')}</strong></span>
                         </div>
-                        <div class="account-tags all-email-account-tags">${accountCategoryHtml}${accountTagsHtml}</div>
+                        <div class="account-tags all-email-account-tags">${accountCategoryHtml}${accountTagsHtml}<button class="btn btn-secondary btn-sm all-email-bind-btn" type="button" onclick="bindAllEmailAccount('${accountParam}', '${messageParam}', event)">${icon('tags')} 快捷绑定</button></div>
                     </div>
                 </div>
             `;
@@ -12004,6 +12110,9 @@ Authorization: Bearer om_your_api_key
             document.getElementById('allEmailSearchInput').value = '';
             document.getElementById('allEmailDateFrom').value = '';
             document.getElementById('allEmailDateTo').value = '';
+            document.getElementById('allEmailCategoryFilter').value = '';
+            document.getElementById('allEmailTagFilter').value = '';
+            document.getElementById('allEmailReadFilter').value = '';
             currentAllEmailsPage = 1;
             loadAllEmails();
         }
@@ -12016,7 +12125,13 @@ Authorization: Bearer om_your_api_key
         }
 
         function showAllEmailDetail(encodedAccount, encodedMessageId) {
-            showEmailDetail(decodeURIComponent(encodedMessageId), decodeURIComponent(encodedAccount));
+            const account = decodeURIComponent(encodedAccount);
+            const messageId = decodeURIComponent(encodedMessageId);
+            // 用内存中(来自 SQLite)的列表项做元数据秒显，避免详情整屏等待实时拉取
+            const cachedItem = allAccountEmails.find(item =>
+                item && item.account_email === account && item.message_id === messageId
+            ) || null;
+            showEmailDetail(messageId, account, cachedItem);
         }
 
         function updateAllEmailsPagination(totalEmails) {
@@ -12350,6 +12465,59 @@ Authorization: Bearer om_your_api_key
             editAccountTags(currentAccount);
         }
 
+        function openDetailAccountBinding() {
+            if (!currentEmailDetailAccount) {
+                showNotification('缺少邮件所属邮箱，无法绑定', 'warning');
+                return;
+            }
+            // 优先从内存中的全部邮件列表项取服务端解析的账户级分类/标签作为权威预填，
+            // 避免在 accounts 未加载时 editAccountTags 回退为空、保存时把账户已有标签清空
+            const matchAccount = item => item && item.account_email === currentEmailDetailAccount;
+            const listItem = allAccountEmails.find(item =>
+                matchAccount(item) && (!currentEmailMessageId || item.message_id === currentEmailMessageId)
+            ) || allAccountEmails.find(matchAccount);
+            let prefill = null;
+            if (listItem) {
+                prefill = {
+                    category_key: listItem.account_category_key || '',
+                    tag_keys: Array.isArray(listItem.account_tag_keys) ? listItem.account_tag_keys : [],
+                    tag_details: Array.isArray(listItem.account_tag_details) ? listItem.account_tag_details : []
+                };
+            } else {
+                const account = accounts.find(item => item.email_id === currentEmailDetailAccount);
+                if (account) {
+                    prefill = {
+                        category_key: account.category_key || '',
+                        tag_keys: Array.isArray(account.tag_keys) ? account.tag_keys : [],
+                        tag_details: Array.isArray(account.tag_details) ? account.tag_details : []
+                    };
+                }
+            }
+            if (!prefill) {
+                showNotification('未能读取该账户当前标签，保存前请确认现有标签未被清空', 'warning');
+            }
+            editAccountTags(currentEmailDetailAccount, prefill);
+        }
+
+        function bindAllEmailAccount(encodedAccount, encodedMessageId, event) {
+            if (event) event.stopPropagation();   // 阻止冒泡触发整行的"打开详情"
+            const account = decodeURIComponent(encodedAccount || '');
+            const messageId = decodeURIComponent(encodedMessageId || '');
+            if (!account) {
+                showNotification('缺少邮箱账户，无法绑定', 'warning');
+                return;
+            }
+            // 直接用内存中(来自 SQLite)的列表项构造权威预填，不打开详情、不发请求
+            const item = allAccountEmails.find(e => e && e.account_email === account && e.message_id === messageId)
+                || allAccountEmails.find(e => e && e.account_email === account);
+            const prefill = item ? {
+                category_key: item.account_category_key || '',
+                tag_keys: Array.isArray(item.account_tag_keys) ? item.account_tag_keys : [],
+                tag_details: Array.isArray(item.account_tag_details) ? item.account_tag_details : []
+            } : null;
+            editAccountTags(account, prefill);
+        }
+
         function buildEmailQuickTagsSection(tagDetails = []) {
             const options = mergeTagOptions(tagDetails);
             if (!options.length) {
@@ -12473,7 +12641,10 @@ Authorization: Bearer om_your_api_key
                     ${renderSenderAvatar(email.sender_initial || sender.initial, senderLogoUrl, 'email-avatar', email.sender_avatar_url)}
                     <div class="email-content">
                         <div class="email-header">
-                            <div class="email-subject">${escapeHtml(email.subject || '(无主题)')}</div>
+                            <div class="email-subject-line">
+                                <span class="email-read-badge ${email.is_read ? 'is-read' : 'is-unread'}">${email.is_read ? '已读' : '未读'}</span>
+                                <div class="email-subject">${escapeHtml(email.subject || '(无主题)')}</div>
+                            </div>
                             <div class="email-date">${formatEmailDate(email.date)}</div>
                         </div>
                         <div class="email-from">${readIcon} ${escapeHtml(sender.email)} ${attachmentIcon}</div>
@@ -12483,7 +12654,48 @@ Authorization: Bearer om_your_api_key
             `;
         }
 
-        async function showEmailDetail(messageId, accountEmail = currentAccount) {
+        function buildEmailDetailHtml(info, accountEmail, bodyHtml) {
+            const sender = getSenderProfile(info.from_email);
+            const senderLogoUrl = resolveSenderLogoUrl(sender.email);
+            return `
+                <div class="email-detail-hero">
+                    ${renderSenderAvatar(sender.initial, senderLogoUrl, 'email-detail-avatar', info.sender_avatar_url)}
+                    <div class="email-detail-hero-copy">
+                        <div class="email-detail-hero-label">发件人头像</div>
+                        <div class="email-detail-hero-name">${escapeHtml(sender.displayName)}</div>
+                        <div class="email-detail-hero-email">${escapeHtml(sender.email)}</div>
+                    </div>
+                </div>
+                <div class="email-detail-meta">
+                    <div class="email-detail-meta-item">
+                        <span>收件邮箱</span>
+                        <strong>${escapeHtml(accountEmail)}</strong>
+                    </div>
+                    <div class="email-detail-meta-item">
+                        <span>收件人</span>
+                        <strong>${escapeHtml(info.to_email || '-')}</strong>
+                    </div>
+                    <div class="email-detail-meta-item">
+                        <span>发送时间</span>
+                        <strong>${escapeHtml(formatEmailDate(info.date))} (${escapeHtml(new Date(info.date).toLocaleString())})</strong>
+                    </div>
+                    <div class="email-detail-meta-item">
+                        <span>邮件主题</span>
+                        <strong>${escapeHtml(info.subject || '(无主题)')}</strong>
+                    </div>
+                    <div class="email-detail-meta-item">
+                        <span>邮件 ID</span>
+                        <strong>${escapeHtml(info.message_id)}</strong>
+                    </div>
+                </div>
+                <div class="email-detail-actions">
+                    <button class="btn btn-primary btn-sm" type="button" onclick="openDetailAccountBinding()">${icon('tags')} 快捷绑定</button>
+                </div>
+                <div id="emailDetailBody">${bodyHtml}</div>
+            `;
+        }
+
+        async function showEmailDetail(messageId, accountEmail = currentAccount, cachedItem = null) {
             if (!accountEmail) {
                 showNotification('缺少邮件所属邮箱，无法加载详情', 'warning');
                 return;
@@ -12491,52 +12703,44 @@ Authorization: Bearer om_your_api_key
             await loadClassifications().catch(() => null);
             document.getElementById('emailModal').classList.remove('hidden');
             document.getElementById('emailModalTitle').textContent = '邮件详情';
-            document.getElementById('emailModalContent').innerHTML = '<div class="loading">正在加载邮件详情...</div>';
 
+            // 全部邮件列表：先用 SQLite 列表数据秒显元数据+快捷绑定，正文再异步拉取一次
+            if (cachedItem) {
+                currentEmailMessageId = cachedItem.message_id || messageId;
+                currentEmailDetailAccount = accountEmail;
+                currentEmailTagKeys = Array.isArray(cachedItem.tag_keys) ? cachedItem.tag_keys.map(normalizeKey) : [];
+                document.getElementById('emailModalTitle').textContent = cachedItem.subject || '(无主题)';
+                document.getElementById('emailModalContent').innerHTML = buildEmailDetailHtml(
+                    cachedItem,
+                    accountEmail,
+                    '<div class="loading">正在加载正文...</div>'
+                );
+                syncLocalEmailReadState(currentEmailMessageId, accountEmail);
+                try {
+                    const data = await apiRequest('/emails/' + encodeURIComponent(accountEmail) + '/' + encodeURIComponent(currentEmailMessageId));
+                    if (Array.isArray(data.tag_keys)) currentEmailTagKeys = data.tag_keys.map(normalizeKey);
+                    const bodyEl = document.getElementById('emailDetailBody');
+                    if (bodyEl) bodyEl.innerHTML = renderEmailContent(data);
+                } catch (error) {
+                    const bodyEl = document.getElementById('emailDetailBody');
+                    if (bodyEl) bodyEl.innerHTML = '<div class="error">正文加载失败: ' + error.message + '</div>';
+                }
+                return;
+            }
+
+            document.getElementById('emailModalContent').innerHTML = '<div class="loading">正在加载邮件详情...</div>';
             try {
                 const data = await apiRequest('/emails/' + encodeURIComponent(accountEmail) + '/' + encodeURIComponent(messageId));
-                const sender = getSenderProfile(data.from_email);
-                const senderLogoUrl = resolveSenderLogoUrl(sender.email);
                 currentEmailMessageId = data.message_id;
                 currentEmailDetailAccount = accountEmail;
                 currentEmailTagKeys = Array.isArray(data.tag_keys) ? data.tag_keys.map(normalizeKey) : [];
                 syncLocalEmailReadState(data.message_id, accountEmail);
-
                 document.getElementById('emailModalTitle').textContent = data.subject || '(无主题)';
-                document.getElementById('emailModalContent').innerHTML = `
-                    <div class="email-detail-hero">
-                        ${renderSenderAvatar(sender.initial, senderLogoUrl, 'email-detail-avatar', data.sender_avatar_url)}
-                        <div class="email-detail-hero-copy">
-                            <div class="email-detail-hero-label">发件人头像</div>
-                            <div class="email-detail-hero-name">${escapeHtml(sender.displayName)}</div>
-                            <div class="email-detail-hero-email">${escapeHtml(sender.email)}</div>
-                        </div>
-                    </div>
-                    <div class="email-detail-meta">
-                        <div class="email-detail-meta-item">
-                            <span>收件邮箱</span>
-                            <strong>${escapeHtml(accountEmail)}</strong>
-                        </div>
-                        <div class="email-detail-meta-item">
-                            <span>收件人</span>
-                            <strong>${escapeHtml(data.to_email)}</strong>
-                        </div>
-                        <div class="email-detail-meta-item">
-                            <span>发送时间</span>
-                            <strong>${escapeHtml(formatEmailDate(data.date))} (${escapeHtml(new Date(data.date).toLocaleString())})</strong>
-                        </div>
-                        <div class="email-detail-meta-item">
-                            <span>邮件主题</span>
-                            <strong>${escapeHtml(data.subject || '(无主题)')}</strong>
-                        </div>
-                        <div class="email-detail-meta-item">
-                            <span>邮件 ID</span>
-                            <strong>${escapeHtml(data.message_id)}</strong>
-                        </div>
-                    </div>
-                    ${renderEmailContent(data)}
-                `;
-
+                document.getElementById('emailModalContent').innerHTML = buildEmailDetailHtml(
+                    data,
+                    accountEmail,
+                    renderEmailContent(data)
+                );
             } catch (error) {
                 document.getElementById('emailModalContent').innerHTML = '<div class="error">加载失败: ' + error.message + '</div>';
             }
@@ -12694,9 +12898,10 @@ Authorization: Bearer om_your_api_key
             loadEmails();
         }
 
-        async function editAccountTags(emailId) {
+        async function editAccountTags(emailId, prefill = null) {
             await loadClassifications().catch(() => null);
-            const account = accounts.find(item => item.email_id === emailId) || {};
+            // prefill 提供时直接用权威预填（如详情页快捷绑定），否则回退到已加载的 accounts 列表
+            const account = prefill || accounts.find(item => item.email_id === emailId) || {};
             currentEditAccount = emailId;
             currentEditCategoryKey = account.category_key || '';
             currentEditTags = Array.isArray(account.tag_keys) ? [...account.tag_keys] : [];

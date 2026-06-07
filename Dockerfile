@@ -38,7 +38,7 @@ EXPOSE 8000
 
 # 健康检查
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
-    CMD python -c "import requests; requests.get('http://localhost:8000/api')" || exit 1
+    CMD python -c "import requests; requests.get('http://localhost:8000/api/auth/state')" || exit 1
 
 # 启动命令
 CMD ["./docker-entrypoint.sh"] 

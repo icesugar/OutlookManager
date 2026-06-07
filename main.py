@@ -115,7 +115,8 @@ ALL_EMAIL_ACCOUNT_TIMEOUT_SECONDS = max(5.0, float(os.getenv("ALL_EMAIL_ACCOUNT_
 ALL_EMAIL_SQLITE_REFRESH_LIMIT = max(1, int(os.getenv("ALL_EMAIL_SQLITE_REFRESH_LIMIT", "5")))
 ALL_EMAIL_SQLITE_ACCOUNT_TIMEOUT_SECONDS = max(5.0, float(os.getenv("ALL_EMAIL_SQLITE_ACCOUNT_TIMEOUT_SECONDS", "60")))
 ALL_EMAIL_SQLITE_AUTO_SYNC_DEFAULT_ENABLED = True
-ALL_EMAIL_SQLITE_AUTO_SYNC_DEFAULT_INTERVAL_MINUTES = 10
+ALL_EMAIL_SQLITE_AUTO_SYNC_DEFAULT_INTERVAL_MINUTES = 30
+ALL_EMAIL_SQLITE_RETENTION_DEFAULT_DAYS = 30
 CLASSIFICATION_KEY_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 EMAIL_ADDRESS_PATTERN = re.compile(r"[A-Z0-9._%+\-']+@[A-Z0-9.\-]+\.[A-Z]{2,}", re.IGNORECASE)
 BUILTIN_CLASSIFICATION_REMARK = "此分类此标签为适配MREGISTER开源项目"
@@ -461,7 +462,8 @@ class SiteSettingsPayload(BaseModel):
     turnstile_enabled_for_public_access: bool = Field(default=False)
     all_email_sqlite_auto_sync_enabled: bool = Field(default=True)
     all_email_sqlite_sync_concurrency: int = Field(default=5, ge=1, le=50)
-    all_email_sqlite_auto_sync_interval_minutes: int = Field(default=10, ge=1, le=1440)
+    all_email_sqlite_auto_sync_interval_minutes: int = Field(default=30, ge=1, le=1440)
+    all_email_sqlite_retention_days: int = Field(default=30, ge=1, le=3650)
 
 # ============================================================================
 # IMAP连接池管理
@@ -1356,6 +1358,27 @@ def initialize_all_email_sqlite() -> None:
         connection.execute(
             "CREATE INDEX IF NOT EXISTS idx_all_email_account ON all_email_index(account_email)"
         )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS all_email_body_cache (
+                account_email TEXT NOT NULL,
+                message_id TEXT NOT NULL,
+                subject TEXT,
+                from_email TEXT,
+                to_email TEXT,
+                date TEXT,
+                sender_avatar_url TEXT,
+                body_plain TEXT,
+                body_html TEXT,
+                received_at_ts REAL,
+                cached_at TEXT NOT NULL,
+                PRIMARY KEY (account_email, message_id)
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_all_email_body_received_at ON all_email_body_cache(received_at_ts)"
+        )
         connection.commit()
 
 
@@ -1464,7 +1487,91 @@ def delete_all_email_sqlite_account(account_email: str) -> None:
             "DELETE FROM all_email_index WHERE account_email = ?",
             (account_email,),
         )
+        connection.execute(
+            "DELETE FROM all_email_body_cache WHERE account_email = ?",
+            (account_email,),
+        )
         connection.commit()
+
+
+def prune_all_email_sqlite_older_than(cutoff_ts: float) -> int:
+    """裁剪 all_email_index 中早于保留窗口(received_at_ts < cutoff_ts)的旧邮件，返回删除行数。"""
+    initialize_all_email_sqlite()
+    with closing(get_all_email_sqlite_connection()) as connection:
+        cursor = connection.execute(
+            "DELETE FROM all_email_index WHERE received_at_ts < ?",
+            (cutoff_ts,),
+        )
+        connection.execute(
+            "DELETE FROM all_email_body_cache WHERE received_at_ts < ?",
+            (cutoff_ts,),
+        )
+        connection.commit()
+        return cursor.rowcount if cursor.rowcount is not None else 0
+
+
+def get_all_email_body_cache(account_email: str, message_id: str):
+    """读取正文缓存行；未命中返回 None。"""
+    initialize_all_email_sqlite()
+    with closing(get_all_email_sqlite_connection()) as connection:
+        return connection.execute(
+            "SELECT * FROM all_email_body_cache WHERE account_email = ? AND message_id = ?",
+            (account_email, message_id),
+        ).fetchone()
+
+
+def upsert_all_email_body_cache(account_email: str, details: EmailDetailsResponse) -> None:
+    """把首次拉取到的正文+元数据写入缓存（正文不可变，后续直接命中）。标签不缓存，查看时实时套用。"""
+    initialize_all_email_sqlite()
+    received_at_ts = email_item_datetime_to_timestamp(details.date)
+    with closing(get_all_email_sqlite_connection()) as connection:
+        connection.execute(
+            """
+            INSERT INTO all_email_body_cache (
+                account_email, message_id, subject, from_email, to_email, date,
+                sender_avatar_url, body_plain, body_html, received_at_ts, cached_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(account_email, message_id) DO UPDATE SET
+                subject = excluded.subject,
+                from_email = excluded.from_email,
+                to_email = excluded.to_email,
+                date = excluded.date,
+                sender_avatar_url = excluded.sender_avatar_url,
+                body_plain = excluded.body_plain,
+                body_html = excluded.body_html,
+                received_at_ts = excluded.received_at_ts,
+                cached_at = excluded.cached_at
+            """,
+            (
+                account_email,
+                details.message_id,
+                details.subject,
+                details.from_email,
+                details.to_email,
+                details.date,
+                details.sender_avatar_url,
+                details.body_plain,
+                details.body_html,
+                received_at_ts,
+                utc_now_iso(),
+            ),
+        )
+        connection.commit()
+
+
+def build_email_details_from_body_cache(row) -> EmailDetailsResponse:
+    """用缓存行构造 EmailDetailsResponse（不含标签，标签由调用方实时套用）。"""
+    return EmailDetailsResponse(
+        message_id=str(row["message_id"]),
+        subject=str(row["subject"] or ""),
+        from_email=str(row["from_email"] or ""),
+        to_email=str(row["to_email"] or ""),
+        date=str(row["date"] or ""),
+        sender_avatar_url=row["sender_avatar_url"],
+        body_plain=row["body_plain"],
+        body_html=row["body_html"],
+    )
 
 
 def get_all_email_sqlite_latest_synced_at() -> str | None:
@@ -1522,13 +1629,27 @@ def query_all_email_sqlite_response(
     search: str | None = None,
     date_from_value: str | None = None,
     date_to_value: str | None = None,
+    category_filter: str | None = None,
+    tag_filter: str | None = None,
+    read_status: str | None = None,
+    filter_aliases: bool = False,
 ) -> AllEmailListResponse:
     accounts_data = load_accounts_data()
-    account_ids = [
-        str(email_id)
-        for email_id, account_data in accounts_data.items()
-        if isinstance(account_data, dict)
-    ]
+    # 分类/标签均为账户级数据，先把命中筛选的账户集合收窄，保证 SQL 端计数与分页准确
+    category_key_filter = normalize_account_category_key(category_filter)
+    tag_key_filter = normalize_reference_key(tag_filter) or None
+    account_ids: list[str] = []
+    for email_id, account_data in accounts_data.items():
+        if not isinstance(account_data, dict):
+            continue
+        if category_key_filter or tag_key_filter:
+            account_category = normalize_account_category_key(account_data.get("category_key"))
+            account_tags = normalize_account_tag_keys(account_data.get("tag_keys", []), account_data.get("tags", []))
+            if category_key_filter and account_category != category_key_filter:
+                continue
+            if tag_key_filter and tag_key_filter not in account_tags:
+                continue
+        account_ids.append(str(email_id))
     if not account_ids:
         return AllEmailListResponse(page=page, page_size=page_size, total_emails=0, emails=[])
 
@@ -1550,24 +1671,53 @@ def query_all_email_sqlite_response(
     if date_to:
         where_clauses.append("received_at_ts <= ?")
         params.append(datetime_to_utc_timestamp(date_to))
+    # 已读/未读状态筛选：is_read 是 all_email_index 的真列，可直接 WHERE 过滤
+    normalized_read_status = str(read_status or "").strip().lower()
+    if normalized_read_status in ("read", "1", "已读"):
+        where_clauses.append("is_read = ?")
+        params.append(1)
+    elif normalized_read_status in ("unread", "0", "未读"):
+        where_clauses.append("is_read = ?")
+        params.append(0)
 
     where_sql = " AND ".join(where_clauses)
     offset = (page - 1) * page_size
     with closing(get_all_email_sqlite_connection()) as connection:
-        total_row = connection.execute(
-            f"SELECT COUNT(*) AS total FROM all_email_index WHERE {where_sql}",
-            params,
-        ).fetchone()
-        rows = connection.execute(
-            f"""
-            SELECT *
-            FROM all_email_index
-            WHERE {where_sql}
-            ORDER BY received_at_ts DESC, account_email ASC, message_id ASC
-            LIMIT ? OFFSET ?
-            """,
-            [*params, page_size, offset],
-        ).fetchall()
+        if filter_aliases:
+            # 别名过滤需解析原始 to_email（可能含显示名/多收件人），SQL 无法精确匹配，
+            # 故取出全部候选行后在 Python 端按收件人是否匹配所属账户来过滤，再分页
+            candidate_rows = connection.execute(
+                f"""
+                SELECT *
+                FROM all_email_index
+                WHERE {where_sql}
+                ORDER BY received_at_ts DESC, account_email ASC, message_id ASC
+                """,
+                params,
+            ).fetchall()
+            filtered_rows = [
+                row for row in candidate_rows
+                if normalize_email_address_for_match(row["account_email"])
+                in extract_recipient_email_addresses(row["to_email"])
+            ]
+            total_count = len(filtered_rows)
+            rows = filtered_rows[offset:offset + page_size]
+        else:
+            total_row = connection.execute(
+                f"SELECT COUNT(*) AS total FROM all_email_index WHERE {where_sql}",
+                params,
+            ).fetchone()
+            total_count = int(total_row["total"] if total_row else 0)
+            rows = connection.execute(
+                f"""
+                SELECT *
+                FROM all_email_index
+                WHERE {where_sql}
+                ORDER BY received_at_ts DESC, account_email ASC, message_id ASC
+                LIMIT ? OFFSET ?
+                """,
+                [*params, page_size, offset],
+            ).fetchall()
 
     catalog = load_account_classifications_data()
     email_tags_data = load_email_tags_data()
@@ -1582,7 +1732,7 @@ def query_all_email_sqlite_response(
     return AllEmailListResponse(
         page=page,
         page_size=page_size,
-        total_emails=int(total_row["total"] if total_row else 0),
+        total_emails=total_count,
         emails=[
             build_all_email_item_from_sqlite_row(row, accounts_data, catalog, email_tags_data)
             for row in rows
@@ -1783,9 +1933,16 @@ async def collect_account_all_emails(
     return matched_items, response.total_emails
 
 
-async def refresh_account_emails_to_sqlite(credentials: AccountCredentials) -> int:
+async def refresh_account_emails_to_sqlite(
+    credentials: AccountCredentials,
+    retention_days: int | None = None,
+) -> int:
     account_email = str(credentials.email)
     latest_ts = await asyncio.to_thread(get_all_email_sqlite_account_latest_ts, account_email)
+    # 保留窗口：早于 now - retention_days 的邮件不入库
+    cutoff_ts = None
+    if retention_days is not None:
+        cutoff_ts = datetime_to_utc_timestamp(datetime.utcnow() - timedelta(days=retention_days))
     response = await list_emails(
         credentials,
         "all",
@@ -1805,6 +1962,8 @@ async def refresh_account_emails_to_sqlite(credentials: AccountCredentials) -> i
         item_ts = email_item_datetime_to_timestamp(email_item.date)
         if latest_ts is not None and item_ts < latest_ts:
             break
+        if cutoff_ts is not None and item_ts < cutoff_ts:
+            continue
         if latest_ts is not None and item_ts == latest_ts and email_item.message_id in existing_ids:
             items_to_store.append(email_item)
             continue
@@ -1882,6 +2041,7 @@ async def run_all_email_sqlite_refresh_task(
     task_id: str,
     account_items: list[tuple[str, dict[str, Any]]],
     concurrency: int,
+    retention_days: int | None = None,
 ) -> None:
     semaphore = asyncio.Semaphore(concurrency)
 
@@ -1890,7 +2050,7 @@ async def run_all_email_sqlite_refresh_task(
             try:
                 credentials = build_account_credentials_from_data(email_id, account_data)
                 updated = await asyncio.wait_for(
-                    refresh_account_emails_to_sqlite(credentials),
+                    refresh_account_emails_to_sqlite(credentials, retention_days),
                     timeout=ALL_EMAIL_SQLITE_ACCOUNT_TIMEOUT_SECONDS,
                 )
                 record_all_email_sqlite_refresh_result(email_id, updated)
@@ -1903,6 +2063,10 @@ async def run_all_email_sqlite_refresh_task(
 
     try:
         await asyncio.gather(*(refresh_one(email_id, data) for email_id, data in account_items))
+        # 按保留天数裁剪超期旧邮件，控制 all_email_index 体积
+        if retention_days is not None:
+            cutoff_ts = datetime_to_utc_timestamp(datetime.utcnow() - timedelta(days=retention_days))
+            await asyncio.to_thread(prune_all_email_sqlite_older_than, cutoff_ts)
         clear_all_email_query_cache()
         update_all_email_sqlite_refresh_status(running=False, completed_at=utc_now_iso())
     except asyncio.CancelledError:
@@ -1924,6 +2088,7 @@ async def run_all_email_sqlite_refresh_task(
 async def start_all_email_sqlite_refresh(
     concurrency: int | None = None,
     trigger: str = "manual",
+    retention_days: int | None = None,
 ) -> AllEmailSqliteRefreshStatusResponse:
     global all_email_sqlite_refresh_task
     with all_email_cache_lock:
@@ -1961,7 +2126,7 @@ async def start_all_email_sqlite_refresh(
             return get_all_email_sqlite_refresh_status()
 
         all_email_sqlite_refresh_task = asyncio.create_task(
-            run_all_email_sqlite_refresh_task(task_id, account_items, effective_concurrency)
+            run_all_email_sqlite_refresh_task(task_id, account_items, effective_concurrency, retention_days)
     )
     return get_all_email_sqlite_refresh_status()
 
@@ -1977,6 +2142,12 @@ def get_all_email_sqlite_sync_settings(settings: dict[str, Any] | None = None) -
             1,
             1440,
         ),
+        "retention_days": normalize_int_setting(
+            source.get("all_email_sqlite_retention_days"),
+            ALL_EMAIL_SQLITE_RETENTION_DEFAULT_DAYS,
+            1,
+            3650,
+        ),
     }
 
 
@@ -1987,6 +2158,7 @@ async def run_all_email_sqlite_auto_sync_once() -> AllEmailSqliteRefreshStatusRe
     return await start_all_email_sqlite_refresh(
         concurrency=sync_settings["concurrency"],
         trigger="scheduled",
+        retention_days=sync_settings["retention_days"],
     )
 
 
@@ -2197,6 +2369,10 @@ async def list_all_account_emails(
     date_from_value: str | None = None,
     date_to_value: str | None = None,
     refresh: bool = False,
+    category_filter: str | None = None,
+    tag_filter: str | None = None,
+    read_status: str | None = None,
+    filter_aliases: bool = False,
 ) -> AllEmailListResponse:
     _ = refresh
     return await asyncio.to_thread(
@@ -2206,6 +2382,10 @@ async def list_all_account_emails(
         search,
         date_from_value,
         date_to_value,
+        category_filter,
+        tag_filter,
+        read_status,
+        filter_aliases,
     )
 
 
@@ -2718,6 +2898,7 @@ def get_default_site_settings() -> dict[str, Any]:
         "all_email_sqlite_auto_sync_enabled": ALL_EMAIL_SQLITE_AUTO_SYNC_DEFAULT_ENABLED,
         "all_email_sqlite_sync_concurrency": 5,
         "all_email_sqlite_auto_sync_interval_minutes": ALL_EMAIL_SQLITE_AUTO_SYNC_DEFAULT_INTERVAL_MINUTES,
+        "all_email_sqlite_retention_days": ALL_EMAIL_SQLITE_RETENTION_DEFAULT_DAYS,
         "updated_at": None,
     }
 
@@ -2893,6 +3074,12 @@ def load_site_settings() -> dict[str, Any]:
                 1,
                 1440,
             ),
+            "all_email_sqlite_retention_days": normalize_int_setting(
+                data.get("all_email_sqlite_retention_days"),
+                defaults["all_email_sqlite_retention_days"],
+                1,
+                3650,
+            ),
             "updated_at": data.get("updated_at"),
         }
 
@@ -2946,6 +3133,12 @@ def save_site_settings(settings: dict[str, Any]) -> dict[str, Any]:
             ALL_EMAIL_SQLITE_AUTO_SYNC_DEFAULT_INTERVAL_MINUTES,
             1,
             1440,
+        ),
+        "all_email_sqlite_retention_days": normalize_int_setting(
+            settings.get("all_email_sqlite_retention_days"),
+            ALL_EMAIL_SQLITE_RETENTION_DEFAULT_DAYS,
+            1,
+            3650,
         ),
         "updated_at": datetime.utcnow().isoformat(),
     }
@@ -4587,8 +4780,16 @@ async def mark_email_as_read_after_view(credentials: AccountCredentials, message
 
 async def get_email_details(credentials: AccountCredentials, message_id: str) -> EmailDetailsResponse:
     """获取邮件详细内容 - 优化版本"""
+    account_email = str(credentials.email)
+    # 命中正文缓存则直接返回，不再实时拉取（正文不可变；标签按当前状态实时套用）
+    cached_body = await asyncio.to_thread(get_all_email_body_cache, account_email, message_id)
+    if cached_body is not None:
+        return apply_email_tag_details(account_email, build_email_details_from_body_cache(cached_body))
+
     if normalize_account_auth_method(credentials.auth_method) == "graph":
-        return await get_graph_email_details(credentials, message_id)
+        details = await get_graph_email_details(credentials, message_id)
+        await asyncio.to_thread(upsert_all_email_body_cache, account_email, details)
+        return details
 
     # 解析复合message_id
     try:
@@ -4664,7 +4865,10 @@ async def get_email_details(credentials: AccountCredentials, message_id: str) ->
             raise HTTPException(status_code=500, detail="Failed to retrieve email details")
     
     # 在线程池中运行同步代码
-    return await asyncio.to_thread(_sync_get_email_details)
+    details = await asyncio.to_thread(_sync_get_email_details)
+    # 首次拉取后写入正文缓存，后续查看直接命中、不再实时拉取
+    await asyncio.to_thread(upsert_all_email_body_cache, account_email, details)
+    return details
 
 
 # ============================================================================
@@ -5401,11 +5605,26 @@ async def get_all_emails(
     search: Optional[str] = Query(None, max_length=200),
     date_from: Optional[str] = Query(None, max_length=40),
     date_to: Optional[str] = Query(None, max_length=40),
+    category: Optional[str] = Query(None, max_length=100),
+    tag: Optional[str] = Query(None, max_length=100),
+    read_status: Optional[str] = Query(None, max_length=20),
+    filter_aliases: bool = Query(True, description="仅返回收件人匹配所属账户的邮件（过滤别名邮件）"),
     refresh: bool = Query(False, description="强制刷新缓存"),
 ):
     """从 SQLite 本地索引获取全部账户邮件，按收件时间倒序聚合。"""
     require_authenticated(request, allow_api_key=True)
-    return await list_all_account_emails(page, page_size, search, date_from, date_to, refresh)
+    return await list_all_account_emails(
+        page,
+        page_size,
+        search,
+        date_from,
+        date_to,
+        refresh,
+        category,
+        tag,
+        read_status,
+        filter_aliases,
+    )
 
 
 @app.post("/all-emails/refresh-sqlite", response_model=AllEmailSqliteRefreshStatusResponse)
@@ -5419,6 +5638,7 @@ async def refresh_all_emails_sqlite(
     return await start_all_email_sqlite_refresh(
         concurrency=sync_settings["concurrency"],
         trigger="manual",
+        retention_days=sync_settings["retention_days"],
     )
 
 
