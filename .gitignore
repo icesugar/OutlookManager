@@ -1,11 +1,65 @@
-.vscode
-__pycache__
-accounts.json
+# IDE / OS
+.vscode/
+.idea/
 .DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Python bytecode / build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+.eggs/
+*.egg-info/
+*.egg
+pip-wheel-metadata/
+wheels/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Test / coverage / tool caches
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+.mypy_cache/
+.pyre/
+.ruff_cache/
+
+# Local env / secrets
+.env
+.env.*
+!.env.example
+!docker.env.example
+accounts.json
 
 # Local temp / verification artifacts
 __tmp_*
 .tmp-e2e/
+*.log
+*.tmp
+*.temp
+.tmp/
+tmp/
+temp/
+.playwright-mcp/
+
+# Local agent settings
+.claude/settings.local.json
 
 # Local Node scratch files
 /package.json
@@ -13,3 +67,4 @@ __tmp_*
 
 # Runtime-generated data
 data/
+email_lists/

@@ -25,6 +25,7 @@ wheels/
 *.egg
 
 # 虚拟环境
+.venv/
 venv/
 env/
 ENV/
@@ -46,14 +47,39 @@ Thumbs.db
 # 临时文件
 *.tmp
 *.temp
+.tmp/
+tmp/
+temp/
+.tmp-e2e/
 
 # 测试和开发文件
 demo.py
 demo2.py
 emails/
+email_lists/
 .pytest_cache/
 .playwright-mcp/
 __tmp*
+
+# 测试覆盖率和工具缓存
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+.mypy_cache/
+.pyre/
+.ruff_cache/
+
+# 本地环境和敏感配置
+.env
+.env.*
+!.env.example
+!docker.env.example
+.claude/
+.github/
 
 # Docker相关
 Dockerfile
