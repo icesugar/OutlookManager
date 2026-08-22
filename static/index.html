@@ -1042,6 +1042,20 @@
         }
 
         /* 统计信息 */
+.account-health-count {
+    color: #2563eb;
+    text-decoration: none;
+    cursor: pointer;
+    border-bottom: 1px dashed transparent;
+}
+.account-health-count:hover {
+    text-decoration: underline;
+}
+.account-health-count.active {
+    color: #1d4ed8;
+    font-weight: 700;
+    border-bottom-color: #1d4ed8;
+}
         .stats-container {
             display: flex;
             gap: 16px;
@@ -5694,6 +5708,10 @@
                         <div id="accountsStats" class="mb-4" style="display: none;">
                             <div class="flex gap-4 text-sm">
                                 <span>总数：<strong id="totalAccounts">0</strong></span>
+                                <span>健康：<a href="javascript:void(0)" class="account-health-count" data-status="healthy" onclick="setHealthStatusFilterFromStats('healthy')"><strong id="healthCountHealthy">0</strong></a></span>
+                                <span>降级：<a href="javascript:void(0)" class="account-health-count" data-status="degraded" onclick="setHealthStatusFilterFromStats('degraded')"><strong id="healthCountDegraded">0</strong></a></span>
+                                <span>异常：<a href="javascript:void(0)" class="account-health-count" data-status="error" onclick="setHealthStatusFilterFromStats('error')"><strong id="healthCountError">0</strong></a></span>
+                                <span>未检查：<a href="javascript:void(0)" class="account-health-count" data-status="unchecked" onclick="setHealthStatusFilterFromStats('unchecked')"><strong id="healthCountUnchecked">0</strong></a></span>
                                 <span>当前页：<strong id="currentPage">1</strong></span>
                                 <span>每页：<strong id="pageSize">10</strong></span>
                                 <span>已选：<strong id="selectedAccountsCount">0</strong></span>
@@ -7308,6 +7326,8 @@ example3@outlook.com----password3----client_id3----refresh_token3"></textarea>
         let accountsPageSize = 10;
         let accountsTotalPages = 0;
         let accountsTotalCount = 0;
+        // 各健康状态分组的全量账户数量（不受当前筛选影响）
+        let accountHealthStatusCounts = { healthy: 0, degraded: 0, error: 0, unchecked: 0 };
         let availableEmailDomains = [];
         let currentEmailSearch = '';
         let currentEmailDomainSearch = '';
@@ -9887,6 +9907,17 @@ example3@live.com----password3----client_id3----refresh_token3`;
 
                 accounts = Array.isArray(data.accounts) ? data.accounts : [];
                 accountsTotalCount = Number.isFinite(data.total_accounts) ? data.total_accounts : 0;
+                // 保存健康状态分组计数，用于统计栏展示
+                if (data.health_status_counts && typeof data.health_status_counts === 'object') {
+                    accountHealthStatusCounts = {
+                        healthy: Number(data.health_status_counts.healthy) || 0,
+                        degraded: Number(data.health_status_counts.degraded) || 0,
+                        error: Number(data.health_status_counts.error) || 0,
+                        unchecked: Number(data.health_status_counts.unchecked) || 0
+                    };
+                } else {
+                    accountHealthStatusCounts = { healthy: 0, degraded: 0, error: 0, unchecked: 0 };
+                }
                 accountsTotalPages = Number.isFinite(data.total_pages) ? data.total_pages : 0;
                 availableEmailDomains = Array.isArray(data.available_email_domains) ? data.available_email_domains : [];
 
@@ -13301,7 +13332,25 @@ Authorization: Bearer om_your_api_key
             document.getElementById('currentPage').textContent = accountsCurrentPage;
             document.getElementById('pageSize').textContent = accountsPageSize;
             document.getElementById('selectedAccountsCount').textContent = String(selectedAccountIds.size);
+            document.getElementById('healthCountHealthy').textContent = String(accountHealthStatusCounts.healthy || 0);
+            document.getElementById('healthCountDegraded').textContent = String(accountHealthStatusCounts.degraded || 0);
+            document.getElementById('healthCountError').textContent = String(accountHealthStatusCounts.error || 0);
+            document.getElementById('healthCountUnchecked').textContent = String(accountHealthStatusCounts.unchecked || 0);
+            // 高亮当前选中的健康状态筛选项
+            document.querySelectorAll('.account-health-count[data-status]').forEach(el => {
+                el.classList.toggle('active', el.dataset.status === currentHealthStatusSearch);
+            });
             accountsStats.style.display = accountsTotalCount > 0 ? 'block' : 'none';
+        }
+
+        // 点击统计栏健康状态数字：再次点击同一状态取消筛选，否则切换到该状态筛选
+        function setHealthStatusFilterFromStats(status) {
+            const filterSelect = document.getElementById('accountHealthStatusFilter');
+            if (!filterSelect) return;
+            const nextValue = (currentHealthStatusSearch === status) ? '' : status;
+            currentHealthStatusSearch = nextValue;
+            filterSelect.value = nextValue;
+            loadAccounts(1);
         }
         
         function updateAccountsPagination() {

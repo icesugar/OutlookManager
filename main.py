@@ -377,6 +377,14 @@ class AccountCredentialFormatsResponse(BaseModel):
     imap_legacy_format: str
 
 
+class HealthStatusCounts(BaseModel):
+    """账户健康状态分组计数模型"""
+    healthy: int = 0
+    degraded: int = 0
+    error: int = 0
+    unchecked: int = 0
+
+
 class AccountListResponse(BaseModel):
     """账户列表响应模型"""
     total_accounts: int
@@ -385,6 +393,7 @@ class AccountListResponse(BaseModel):
     total_pages: int
     accounts: List[AccountInfo]
     available_email_domains: List[str] = Field(default_factory=list)
+    health_status_counts: HealthStatusCounts = Field(default_factory=HealthStatusCounts)
 
 
 class AccountBatchDeleteRequest(BaseModel):
@@ -2627,6 +2636,12 @@ async def get_all_accounts(
             )
             all_accounts.append(account)
 
+        # 健康状态分组计数：始终基于过滤前的全量账户统计，供前端展示各状态数量
+        health_status_counts_data: dict[str, int] = {group: 0 for group in ACCOUNT_HEALTH_STATUS_GROUPS}
+        for account in all_accounts:
+            status_group = resolve_account_health_status_group(account.status)
+            health_status_counts_data[status_group] += 1
+
         # 应用搜索过滤
         filtered_accounts = all_accounts
         
@@ -2707,6 +2722,7 @@ async def get_all_accounts(
             total_pages=total_pages,
             accounts=paginated_accounts,
             available_email_domains=sorted(available_email_domains),
+            health_status_counts=HealthStatusCounts(**health_status_counts_data),
         )
 
     except json.JSONDecodeError:
