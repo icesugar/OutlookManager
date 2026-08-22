@@ -387,6 +387,19 @@ class AccountListResponse(BaseModel):
     available_email_domains: List[str] = Field(default_factory=list)
 
 
+class AccountBatchDeleteRequest(BaseModel):
+    """批量删除邮箱账户请求模型"""
+    email_ids: List[str] = Field(default_factory=list)
+
+
+class AccountBatchDeleteResponse(BaseModel):
+    """批量删除邮箱账户响应模型"""
+    requested: int
+    deleted: List[str] = Field(default_factory=list)
+    failed: dict[str, str] = Field(default_factory=dict)
+    message: str
+
+
 class UpdateAccountClassificationRequest(BaseModel):
     """更新账户分类和标签请求模型"""
     category_key: Optional[str] = None
@@ -748,6 +761,24 @@ def clear_email_cache(email: str = None) -> None:
 def normalize_account_auth_method(auth_method: str | None) -> str:
     method = (auth_method or DEFAULT_ACCOUNT_AUTH_METHOD).strip().lower()
     return method if method in SUPPORTED_ACCOUNT_AUTH_METHODS else DEFAULT_ACCOUNT_AUTH_METHOD
+
+
+# 健康状态筛选分组：与列表卡片展示的标签保持一致，把细分的原始状态合并成 4 组
+ACCOUNT_HEALTH_STATUS_GROUPS: dict[str, set[str]] = {
+    "healthy": {"healthy"},
+    "degraded": {"imap_error", "graph_error"},
+    "error": {"auth_error", "config_error", "error"},
+    "unchecked": {"unchecked"},
+}
+
+
+def resolve_account_health_status_group(status: str | None) -> str:
+    """把账户原始 status 归入展示分组；未知状态与前端一致按“未检查”处理。"""
+    normalized = str(status or "").strip().lower()
+    for group, raw_statuses in ACCOUNT_HEALTH_STATUS_GROUPS.items():
+        if normalized in raw_statuses:
+            return group
+    return "unchecked"
 
 
 def _dedupe_preserve_order(values: list[str]) -> list[str]:
@@ -2544,6 +2575,7 @@ async def get_all_accounts(
     category_search: Optional[str] = None,
     category_key: Optional[str] = None,
     tag_key: Optional[str] = None,
+    health_status: Optional[str] = None,
 ) -> AccountListResponse:
     """获取所有已加载的邮箱账户列表，支持分页和搜索"""
     try:
@@ -2651,6 +2683,14 @@ async def get_all_accounts(
                 )
             ]
 
+        # 健康状态筛选：按展示分组（健康/降级/异常/未检查）过滤
+        health_status_filter = str(health_status or "").strip().lower()
+        if health_status_filter in ACCOUNT_HEALTH_STATUS_GROUPS:
+            filtered_accounts = [
+                acc for acc in filtered_accounts
+                if resolve_account_health_status_group(acc.status) == health_status_filter
+            ]
+
         # 计算分页信息
         total_accounts = len(filtered_accounts)
         total_pages = (total_accounts + page_size - 1) // page_size if total_accounts > 0 else 0
@@ -2685,9 +2725,12 @@ async def get_all_accounts(
 # Use a re-entrant lock so nested reads/writes do not deadlock the request thread.
 auth_lock = threading.RLock()
 account_health_check_lock = threading.RLock()
+# 健康检查任务句柄，仅保留在后台内存中，用于支持取消正在运行的检查
+account_health_check_task: Optional[asyncio.Task] = None
 account_health_check_state: dict[str, Any] = {
     "task_id": None,
     "running": False,
+    "cancelled": False,
     "total": 0,
     "checked": 0,
     "results": {},
@@ -4300,6 +4343,7 @@ def get_account_health_check_state() -> dict[str, Any]:
         return {
             "task_id": account_health_check_state.get("task_id"),
             "running": bool(account_health_check_state.get("running")),
+            "cancelled": bool(account_health_check_state.get("cancelled")),
             "total": int(account_health_check_state.get("total", 0) or 0),
             "checked": int(account_health_check_state.get("checked", 0) or 0),
             "results": dict(account_health_check_state.get("results", {})),
@@ -4315,29 +4359,14 @@ def update_account_health_check_state(**payload: Any) -> dict[str, Any]:
         return get_account_health_check_state()
 
 
-async def run_account_health_check_task(task_id: str) -> None:
-    accounts_data = load_accounts_data()
-    account_ids = list(accounts_data.keys())
-    update_account_health_check_state(
-        task_id=task_id,
-        running=True,
-        total=len(account_ids),
-        checked=0,
-        results={},
-        started_at=datetime.utcnow().isoformat(),
-        completed_at=None,
-        error="",
-    )
-
-    if not account_ids:
-        update_account_health_check_state(running=False, completed_at=datetime.utcnow().isoformat())
-        return
-
+async def run_account_health_check_task(task_id: str, account_ids: list[str]) -> None:
     results: dict[str, Any] = {}
     try:
         for index, email_id in enumerate(account_ids, start=1):
             try:
                 results[email_id] = await refresh_account_health(email_id)
+            except asyncio.CancelledError:
+                raise
             except HTTPException as exc:
                 record = build_account_health_record("error", 10, "健康检查失败", str(exc.detail))
                 save_account_health_record(email_id, record)
@@ -4348,6 +4377,16 @@ async def run_account_health_check_task(task_id: str) -> None:
                 results[email_id] = record
 
             update_account_health_check_state(checked=index, results=dict(results))
+    except asyncio.CancelledError:
+        # 用户点击“取消检查”：保留已检查到的结果，标记为已取消后结束任务
+        update_account_health_check_state(
+            running=False,
+            cancelled=True,
+            completed_at=datetime.utcnow().isoformat(),
+            error="",
+            results=dict(results),
+        )
+        raise
     except Exception as exc:
         update_account_health_check_state(running=False, completed_at=datetime.utcnow().isoformat(), error=str(exc), results=dict(results))
         raise
@@ -4356,14 +4395,59 @@ async def run_account_health_check_task(task_id: str) -> None:
 
 
 def start_account_health_check() -> dict[str, Any]:
-    current_state = get_account_health_check_state()
-    if current_state.get("running"):
-        return current_state
+    global account_health_check_task
+    with account_health_check_lock:
+        task = account_health_check_task
+        if task and not task.done() and account_health_check_state.get("running"):
+            return get_account_health_check_state()
 
-    task_id = secrets.token_urlsafe(12)
-    update_account_health_check_state(task_id=task_id)
-    asyncio.create_task(run_account_health_check_task(task_id))
-    return get_account_health_check_state()
+        task_id = secrets.token_urlsafe(12)
+        # 先落状态再建任务，保证刷新页面时能立刻查到“正在检查”与总数
+        account_ids = list(load_accounts_data().keys())
+        started_at = datetime.utcnow().isoformat()
+        account_health_check_state.update({
+            "task_id": task_id,
+            "running": bool(account_ids),
+            "cancelled": False,
+            "total": len(account_ids),
+            "checked": 0,
+            "results": {},
+            "started_at": started_at,
+            "completed_at": None if account_ids else started_at,
+            "error": "",
+        })
+        if not account_ids:
+            account_health_check_task = None
+            return get_account_health_check_state()
+
+        account_health_check_task = asyncio.create_task(run_account_health_check_task(task_id, account_ids))
+        return get_account_health_check_state()
+
+
+async def cancel_account_health_check() -> dict[str, Any]:
+    """取消后台正在运行的健康检查任务，已检查过的账户结果予以保留。"""
+    global account_health_check_task
+    with account_health_check_lock:
+        task = account_health_check_task
+
+    if task and not task.done():
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logger.warning(f"Account health check task ended with error while cancelling: {exc}")
+
+    with account_health_check_lock:
+        account_health_check_task = None
+        if account_health_check_state.get("running"):
+            account_health_check_state.update({
+                "running": False,
+                "cancelled": True,
+                "completed_at": datetime.utcnow().isoformat(),
+            })
+        return get_account_health_check_state()
 
 
 # ============================================================================
@@ -5485,10 +5569,11 @@ async def get_accounts(
     category_search: Optional[str] = Query(None, description="分类模糊搜索，可匹配中英文名称和 key"),
     category_key: Optional[str] = Query(None, description="按分类 key 精确过滤"),
     tag_key: Optional[str] = Query(None, description="按标签 key 精确过滤"),
+    health_status: Optional[str] = Query(None, description="按健康状态分组过滤：healthy/degraded/error/unchecked"),
 ):
     """获取所有已加载的邮箱账户列表，支持分页和搜索"""
     require_authenticated(request, allow_api_key=True)
-    return await get_all_accounts(page, page_size, email_search, email_domain, tag_search, category_search, category_key, tag_key)
+    return await get_all_accounts(page, page_size, email_search, email_domain, tag_search, category_search, category_key, tag_key, health_status)
 
 
 @app.get("/classifications", response_model=ClassificationCatalogResponse)
@@ -5581,6 +5666,13 @@ async def run_accounts_health_check(request: Request):
 async def get_accounts_health_check_status(request: Request):
     require_authenticated(request, allow_api_key=True)
     return get_account_health_check_state()
+
+
+@app.delete("/accounts/health-check")
+async def cancel_accounts_health_check(request: Request):
+    """取消后台正在运行的账户健康检查任务"""
+    require_authenticated(request, allow_api_key=True)
+    return await cancel_account_health_check()
 
 
 @app.get("/accounts/{email_id}/credential-formats", response_model=AccountCredentialFormatsResponse)
@@ -5757,6 +5849,37 @@ async def update_email_tags(email_id: str, message_id: str, payload: UpdateEmail
         tag_details=resolve_tag_options(tag_keys, catalog),
     )
 
+
+def purge_account_related_data(email_id: str) -> bool:
+    """删除邮箱账户及其关联数据（健康记录、公开分享、邮件标签、开放访问会话、SQLite 邮件与缓存）。
+
+    返回 True 表示账户存在并已删除；False 表示 accounts.json 中不存在该账户。
+    """
+    with auth_lock:
+        accounts = _read_json_file(ACCOUNTS_FILE, {})
+        accounts = accounts if isinstance(accounts, dict) else {}
+        if email_id not in accounts:
+            return False
+        del accounts[email_id]
+        _write_json_file(ACCOUNTS_FILE, accounts)
+
+    remove_account_health_record(email_id)
+    public_shares_data = load_public_shares_data()
+    if email_id in public_shares_data.get("shares", {}):
+        del public_shares_data["shares"][email_id]
+        save_public_shares_data(public_shares_data)
+    email_tags_data = load_email_tags_data()
+    if email_id in email_tags_data.get("emails", {}):
+        del email_tags_data["emails"][email_id]
+        save_email_tags_data(email_tags_data)
+    revoke_open_access_sessions(email_id)
+    # 删除该邮箱已同步到 SQLite 的邮件正文与索引，并清理内存中的邮件缓存
+    delete_all_email_sqlite_account(email_id)
+    clear_email_cache(email_id)
+    clear_all_email_query_cache()
+    return True
+
+
 @app.delete("/accounts/{email_id}", response_model=AccountResponse)
 async def delete_account(email_id: str, request: Request):
     """删除邮箱账户"""
@@ -5765,41 +5888,50 @@ async def delete_account(email_id: str, request: Request):
         # 检查账户是否存在
         await get_account_credentials(email_id)
 
-        deleted = False
-        with auth_lock:
-            accounts = _read_json_file(ACCOUNTS_FILE, {})
-            accounts = accounts if isinstance(accounts, dict) else {}
-            if email_id in accounts:
-                del accounts[email_id]
-                _write_json_file(ACCOUNTS_FILE, accounts)
-                deleted = True
-
-        if not deleted:
+        if not purge_account_related_data(email_id):
             raise HTTPException(status_code=404, detail="Account not found")
 
-        remove_account_health_record(email_id)
-        public_shares_data = load_public_shares_data()
-        if email_id in public_shares_data.get("shares", {}):
-            del public_shares_data["shares"][email_id]
-            save_public_shares_data(public_shares_data)
-        email_tags_data = load_email_tags_data()
-        if email_id in email_tags_data.get("emails", {}):
-            del email_tags_data["emails"][email_id]
-            save_email_tags_data(email_tags_data)
-        revoke_open_access_sessions(email_id)
-        delete_all_email_sqlite_account(email_id)
-        clear_all_email_query_cache()
-        
         return AccountResponse(
             email_id=email_id,
             message="Account deleted successfully."
         )
-            
+
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error deleting account: {e}")
         raise HTTPException(status_code=500, detail="Failed to delete account")
+
+
+@app.post("/accounts/batch-delete", response_model=AccountBatchDeleteResponse)
+async def batch_delete_accounts(payload: AccountBatchDeleteRequest, request: Request):
+    """批量删除邮箱账户，同时清理各账户接收的邮件等关联数据"""
+    require_authenticated(request, allow_api_key=True)
+
+    # 去重并保持前端传入顺序，避免同一账户重复删除
+    email_ids = _dedupe_preserve_order([str(item or "").strip() for item in payload.email_ids if str(item or "").strip()])
+    if not email_ids:
+        raise HTTPException(status_code=400, detail="email_ids must not be empty")
+
+    deleted: list[str] = []
+    failed: dict[str, str] = {}
+    for email_id in email_ids:
+        try:
+            if purge_account_related_data(email_id):
+                deleted.append(email_id)
+            else:
+                failed[email_id] = "Account not found"
+        except Exception as exc:
+            logger.error(f"Error deleting account {email_id}: {exc}")
+            failed[email_id] = str(exc)
+
+    return AccountBatchDeleteResponse(
+        requested=len(email_ids),
+        deleted=deleted,
+        failed=failed,
+        message=f"已删除 {len(deleted)} 个邮箱账户" + (f"，{len(failed)} 个失败" if failed else ""),
+    )
+
 
 @app.get("/open/emails/{email_id}")
 async def open_email_page(email_id: str):

@@ -928,6 +928,298 @@ class AllEmailSyncSettingsTest(unittest.TestCase):
         self.assertEqual([], calls)
 
 
+class AccountHealthStatusFilterTest(unittest.TestCase):
+    """账户列表健康状态筛选"""
+
+    def make_accounts_and_health(self):
+        accounts = {
+            "healthy@example.com": {"refresh_token": "refresh", "client_id": "client"},
+            "imap@example.com": {"refresh_token": "refresh", "client_id": "client"},
+            "graph@example.com": {"refresh_token": "refresh", "client_id": "client"},
+            "auth@example.com": {"refresh_token": "refresh", "client_id": "client"},
+            "config@example.com": {"refresh_token": "refresh", "client_id": "client"},
+            "plain@example.com": {"refresh_token": "refresh", "client_id": "client"},
+            "never@example.com": {"refresh_token": "refresh", "client_id": "client"},
+        }
+        health = {
+            "accounts": {
+                "healthy@example.com": main.build_account_health_record("healthy", 100, "正常"),
+                "imap@example.com": main.build_account_health_record("imap_error", 60, "IMAP 异常"),
+                "graph@example.com": main.build_account_health_record("graph_error", 60, "Graph 异常"),
+                "auth@example.com": main.build_account_health_record("auth_error", 10, "认证失败"),
+                "config@example.com": main.build_account_health_record("config_error", 10, "配置缺失"),
+                "plain@example.com": main.build_account_health_record("error", 10, "检查失败"),
+            }
+        }
+        return accounts, health
+
+    def list_with_filter(self, health_status):
+        accounts, health = self.make_accounts_and_health()
+        original_load_accounts_data = main.load_accounts_data
+        original_load_account_health_data = main.load_account_health_data
+        try:
+            main.load_accounts_data = lambda: accounts
+            main.load_account_health_data = lambda: health
+            response = asyncio.run(
+                main.get_all_accounts(page=1, page_size=50, health_status=health_status)
+            )
+        finally:
+            main.load_accounts_data = original_load_accounts_data
+            main.load_account_health_data = original_load_account_health_data
+        return response
+
+    def test_status_groups_merge_raw_statuses(self):
+        self.assertEqual("healthy", main.resolve_account_health_status_group("healthy"))
+        self.assertEqual("degraded", main.resolve_account_health_status_group("imap_error"))
+        self.assertEqual("degraded", main.resolve_account_health_status_group("graph_error"))
+        self.assertEqual("error", main.resolve_account_health_status_group("auth_error"))
+        self.assertEqual("error", main.resolve_account_health_status_group("config_error"))
+        self.assertEqual("error", main.resolve_account_health_status_group("error"))
+        self.assertEqual("unchecked", main.resolve_account_health_status_group("unchecked"))
+        # 未知状态与前端展示保持一致，归入“未检查”
+        self.assertEqual("unchecked", main.resolve_account_health_status_group("something_new"))
+        self.assertEqual("unchecked", main.resolve_account_health_status_group(None))
+
+    def test_filter_healthy_group(self):
+        response = self.list_with_filter("healthy")
+        self.assertEqual(["healthy@example.com"], [acc.email_id for acc in response.accounts])
+        self.assertEqual(1, response.total_accounts)
+
+    def test_filter_degraded_group_merges_imap_and_graph(self):
+        response = self.list_with_filter("degraded")
+        self.assertEqual(
+            {"imap@example.com", "graph@example.com"},
+            {acc.email_id for acc in response.accounts},
+        )
+        self.assertEqual(2, response.total_accounts)
+
+    def test_filter_error_group_merges_auth_config_and_error(self):
+        response = self.list_with_filter("error")
+        self.assertEqual(
+            {"auth@example.com", "config@example.com", "plain@example.com"},
+            {acc.email_id for acc in response.accounts},
+        )
+        self.assertEqual(3, response.total_accounts)
+
+    def test_filter_unchecked_group_includes_accounts_without_record(self):
+        response = self.list_with_filter("unchecked")
+        self.assertEqual(["never@example.com"], [acc.email_id for acc in response.accounts])
+        self.assertEqual(1, response.total_accounts)
+
+    def test_blank_or_unknown_filter_keeps_all_accounts(self):
+        self.assertEqual(7, self.list_with_filter(None).total_accounts)
+        self.assertEqual(7, self.list_with_filter("").total_accounts)
+        self.assertEqual(7, self.list_with_filter("not_a_group").total_accounts)
+
+
+class AccountBatchDeleteTest(unittest.TestCase):
+    """批量删除邮箱账户及关联数据"""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        temp_path = Path(self.temp_dir.name)
+        self.originals = {
+            "ACCOUNTS_FILE": main.ACCOUNTS_FILE,
+            "ACCOUNT_HEALTH_FILE": main.ACCOUNT_HEALTH_FILE,
+            "PUBLIC_SHARES_FILE": main.PUBLIC_SHARES_FILE,
+            "EMAIL_TAGS_FILE": main.EMAIL_TAGS_FILE,
+            "OPEN_ACCESS_SESSIONS_FILE": main.OPEN_ACCESS_SESSIONS_FILE,
+            "ALL_EMAIL_SQLITE_FILE": main.ALL_EMAIL_SQLITE_FILE,
+        }
+        main.ACCOUNTS_FILE = temp_path / "accounts.json"
+        main.ACCOUNT_HEALTH_FILE = temp_path / "account_health.json"
+        main.PUBLIC_SHARES_FILE = temp_path / "public_shares.json"
+        main.EMAIL_TAGS_FILE = temp_path / "email_tags.json"
+        main.OPEN_ACCESS_SESSIONS_FILE = temp_path / "open_access_sessions.json"
+        main.ALL_EMAIL_SQLITE_FILE = temp_path / "all_emails.sqlite3"
+        main.initialize_all_email_sqlite()
+
+    def tearDown(self):
+        main.clear_all_email_query_cache()
+        for name, value in self.originals.items():
+            setattr(main, name, value)
+        self.temp_dir.cleanup()
+
+    def seed_account(self, email_id: str):
+        accounts = main._read_json_file(main.ACCOUNTS_FILE, {})
+        accounts[email_id] = {"refresh_token": "refresh", "client_id": "client"}
+        main._write_json_file(main.ACCOUNTS_FILE, accounts)
+        main.save_account_health_record(email_id, main.build_account_health_record("healthy", 100, "正常"))
+        main.upsert_all_email_sqlite_items(email_id, [
+            main.EmailItem(
+                message_id="INBOX-1",
+                folder="INBOX",
+                subject="Subject",
+                from_email="sender@example.com",
+                date="2026-01-01T00:00:00",
+                to_email=email_id,
+            )
+        ])
+
+    def count_sqlite_rows(self, email_id: str) -> int:
+        with main.closing(main.get_all_email_sqlite_connection()) as connection:
+            cursor = connection.execute(
+                "SELECT COUNT(*) FROM all_email_index WHERE account_email = ?",
+                (email_id,),
+            )
+            return int(cursor.fetchone()[0])
+
+    def test_purge_removes_account_and_its_emails(self):
+        self.seed_account("first@example.com")
+        self.assertEqual(1, self.count_sqlite_rows("first@example.com"))
+
+        self.assertTrue(main.purge_account_related_data("first@example.com"))
+
+        self.assertNotIn("first@example.com", main._read_json_file(main.ACCOUNTS_FILE, {}))
+        self.assertEqual("unchecked", main.get_account_health_record("first@example.com")["status"])
+        self.assertEqual(0, self.count_sqlite_rows("first@example.com"))
+
+    def test_purge_returns_false_for_missing_account(self):
+        self.assertFalse(main.purge_account_related_data("missing@example.com"))
+
+    def test_batch_delete_reports_deleted_and_failed(self):
+        self.seed_account("first@example.com")
+        self.seed_account("second@example.com")
+        original_require_authenticated = main.require_authenticated
+        try:
+            main.require_authenticated = lambda request, allow_api_key=False: {"auth_type": "session"}
+            response = asyncio.run(main.batch_delete_accounts(
+                main.AccountBatchDeleteRequest(email_ids=[
+                    "first@example.com",
+                    "second@example.com",
+                    "missing@example.com",
+                    "first@example.com",
+                ]),
+                SimpleNamespace(),
+            ))
+        finally:
+            main.require_authenticated = original_require_authenticated
+
+        # 重复项去重后只请求 3 个账户
+        self.assertEqual(3, response.requested)
+        self.assertEqual(["first@example.com", "second@example.com"], response.deleted)
+        self.assertEqual({"missing@example.com": "Account not found"}, response.failed)
+        self.assertEqual({}, main._read_json_file(main.ACCOUNTS_FILE, {}))
+        self.assertEqual(0, self.count_sqlite_rows("first@example.com"))
+        self.assertEqual(0, self.count_sqlite_rows("second@example.com"))
+
+    def test_batch_delete_rejects_empty_list(self):
+        original_require_authenticated = main.require_authenticated
+        try:
+            main.require_authenticated = lambda request, allow_api_key=False: {"auth_type": "session"}
+            with self.assertRaises(main.HTTPException) as ctx:
+                asyncio.run(main.batch_delete_accounts(
+                    main.AccountBatchDeleteRequest(email_ids=["   "]),
+                    SimpleNamespace(),
+                ))
+        finally:
+            main.require_authenticated = original_require_authenticated
+
+        self.assertEqual(400, ctx.exception.status_code)
+
+
+class AccountHealthCheckCancelTest(unittest.TestCase):
+    """后台健康检查任务的启动与取消"""
+
+    def setUp(self):
+        self.original_state = dict(main.account_health_check_state)
+        self.original_task = main.account_health_check_task
+
+    def tearDown(self):
+        main.account_health_check_task = self.original_task
+        main.account_health_check_state.clear()
+        main.account_health_check_state.update(self.original_state)
+
+    def test_state_exposes_cancelled_flag(self):
+        state = main.get_account_health_check_state()
+        self.assertIn("cancelled", state)
+        self.assertIsInstance(state["cancelled"], bool)
+
+    def test_cancel_stops_running_task_and_keeps_checked_results(self):
+        original_load_accounts_data = main.load_accounts_data
+        original_refresh_account_health = main.refresh_account_health
+        checked_emails: list[str] = []
+
+        async def slow_refresh(email_id: str):
+            checked_emails.append(email_id)
+            # 第一个账户立即返回，其余账户挂起以模拟检查中被取消
+            if len(checked_emails) > 1:
+                await asyncio.sleep(30)
+            return main.build_account_health_record("healthy", 100, "正常")
+
+        async def scenario():
+            main.load_accounts_data = lambda: {
+                f"acc{index}@example.com": {"refresh_token": "refresh", "client_id": "client"}
+                for index in range(5)
+            }
+            main.refresh_account_health = slow_refresh
+            main.save_account_health_record = lambda email_id, record: None
+
+            started = main.start_account_health_check()
+            self.assertTrue(started["running"])
+            self.assertFalse(started["cancelled"])
+            self.assertEqual(5, started["total"])
+
+            # 让任务真正开始执行并完成第一个账户
+            for _ in range(20):
+                await asyncio.sleep(0)
+                if main.get_account_health_check_state()["checked"] >= 1:
+                    break
+
+            return await main.cancel_account_health_check()
+
+        original_save = main.save_account_health_record
+        try:
+            final_state = asyncio.run(scenario())
+        finally:
+            main.load_accounts_data = original_load_accounts_data
+            main.refresh_account_health = original_refresh_account_health
+            main.save_account_health_record = original_save
+
+        self.assertFalse(final_state["running"])
+        self.assertTrue(final_state["cancelled"])
+        # 取消前已检查完成的账户结果被保留
+        self.assertGreaterEqual(final_state["checked"], 1)
+        self.assertLess(final_state["checked"], 5)
+        self.assertIsNotNone(final_state["completed_at"])
+
+    def test_cancel_without_running_task_is_noop(self):
+        main.account_health_check_task = None
+        main.account_health_check_state.update({"running": False, "cancelled": False})
+
+        state = asyncio.run(main.cancel_account_health_check())
+
+        self.assertFalse(state["running"])
+        self.assertFalse(state["cancelled"])
+
+    def test_start_is_idempotent_while_running(self):
+        original_load_accounts_data = main.load_accounts_data
+        original_refresh_account_health = main.refresh_account_health
+
+        async def hanging_refresh(email_id: str):
+            await asyncio.sleep(30)
+            return main.build_account_health_record("healthy", 100, "正常")
+
+        async def scenario():
+            main.load_accounts_data = lambda: {
+                "acc@example.com": {"refresh_token": "refresh", "client_id": "client"},
+                "acc2@example.com": {"refresh_token": "refresh", "client_id": "client"},
+            }
+            main.refresh_account_health = hanging_refresh
+
+            first = main.start_account_health_check()
+            await asyncio.sleep(0)
+            second = main.start_account_health_check()
+            self.assertEqual(first["task_id"], second["task_id"])
+            return await main.cancel_account_health_check()
+
+        try:
+            asyncio.run(scenario())
+        finally:
+            main.load_accounts_data = original_load_accounts_data
+            main.refresh_account_health = original_refresh_account_health
+
+
 class StaticConfigurationTest(unittest.TestCase):
     def test_frontend_all_email_sync_status_fallback_matches_backend_default(self):
         html = (PROJECT_ROOT / "static/index.html").read_text(encoding="utf-8")

@@ -3268,7 +3268,8 @@
 
         .account-filter-grid {
             display: grid;
-            grid-template-columns: minmax(220px, 2fr) repeat(3, minmax(160px, 1fr));
+            /* 自动换行：容器不够宽时筛选项折行，避免第 5 个筛选框溢出 */
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
             gap: 12px;
         }
 
@@ -3278,6 +3279,7 @@
 
         .account-filter-field-wide {
             min-width: 0;
+            grid-column: span 2;
         }
 
         .account-toolbar-row {
@@ -5598,7 +5600,7 @@
                                     <span></span>
                                     添加账户
                                 </button>
-                                <button class="btn btn-secondary btn-sm" onclick="refreshAccountHealth()" id="accountHealthBtn">
+                                <button class="btn btn-secondary btn-sm" onclick="toggleAccountHealthCheck()" id="accountHealthBtn">
                                     <span></span>
                                     检查账户健康
                                 </button>
@@ -5639,6 +5641,15 @@
                                             <option value="">全部分类</option>
                                         </select>
                                     </div>
+                                    <div class="account-filter-field">
+                                        <select id="accountHealthStatusFilter" class="form-control">
+                                            <option value="">全部健康状态</option>
+                                            <option value="healthy">健康</option>
+                                            <option value="degraded">降级</option>
+                                            <option value="error">异常</option>
+                                            <option value="unchecked">未检查</option>
+                                        </select>
+                                    </div>
                                 </div>
                                 <div class="account-toolbar-row">
                                     <div class="account-filter-actions">
@@ -5668,6 +5679,10 @@
                                             <button id="accountsBatchConfigBtn" class="btn btn-secondary btn-sm" type="button" onclick="openBatchAccountConfigModal()">
                                                 <span></span>
                                                 批量配置
+                                            </button>
+                                            <button id="accountsBatchDeleteBtn" class="btn btn-danger btn-sm" type="button" onclick="batchDeleteSelectedAccounts()" style="display: none;">
+                                                <span></span>
+                                                批量删除
                                             </button>
                                         </div>
                                     </div>
@@ -7298,6 +7313,7 @@ example3@outlook.com----password3----client_id3----refresh_token3"></textarea>
         let currentEmailDomainSearch = '';
         let currentTagSearch = '';
         let currentCategoryKeySearch = '';
+        let currentHealthStatusSearch = '';
         let selectedAccountIds = new Set();
         let bulkAccountSelectionEnabled = false;
         let accountSelectionDragActive = false;
@@ -7306,6 +7322,8 @@ example3@outlook.com----password3----client_id3----refresh_token3"></textarea>
         let batchConfigCategoryKey = '';
         let batchConfigTagKeys = [];
         let accountHealthProgressPollTimer = null;
+        let accountHealthCheckRunning = false;
+        let accountHealthCheckActiveTaskId = null;
         let authState = null;
         let appBootstrapped = false;
         let setupAgreementComplete = false;
@@ -7401,6 +7419,9 @@ example3@outlook.com----password3----client_id3----refresh_token3"></textarea>
             }
             if (currentCategoryKeySearch) {
                 params.append('category_key', currentCategoryKeySearch);
+            }
+            if (currentHealthStatusSearch) {
+                params.append('health_status', currentHealthStatusSearch);
             }
 
             return params;
@@ -7539,6 +7560,7 @@ example3@outlook.com----password3----client_id3----refresh_token3"></textarea>
         function updateAccountsActionButtons() {
             const selectAllButton = document.getElementById('accountsSelectAllBtn');
             const batchConfigButton = document.getElementById('accountsBatchConfigBtn');
+            const batchDeleteButton = document.getElementById('accountsBatchDeleteBtn');
             const allSelected = areAllFilteredAccountsSelected();
             const selectedCount = selectedAccountIds.size;
 
@@ -7554,6 +7576,14 @@ example3@outlook.com----password3----client_id3----refresh_token3"></textarea>
                 batchConfigButton.classList.toggle('is-active', selectedCount > 0);
                 batchConfigButton.classList.toggle('is-disabled', selectedCount === 0);
                 setButtonIcon(batchConfigButton, 'classification');
+            }
+
+            // 批量删除：仅在开启批量管理且已勾选邮箱时出现
+            if (batchDeleteButton) {
+                const canBatchDelete = bulkAccountSelectionEnabled && selectedCount > 0;
+                batchDeleteButton.style.display = canBatchDelete ? '' : 'none';
+                batchDeleteButton.disabled = !canBatchDelete;
+                setButtonIcon(batchDeleteButton, 'delete');
             }
         }
 
@@ -7719,6 +7749,51 @@ example3@outlook.com----password3----client_id3----refresh_token3"></textarea>
             } finally {
                 saveBtn.disabled = false;
                 saveBtn.textContent = '完成';
+            }
+        }
+
+        async function batchDeleteSelectedAccounts() {
+            const emailIds = [...selectedAccountIds];
+            if (!emailIds.length) {
+                showNotification('请先选择至少一个邮箱', 'warning');
+                return;
+            }
+
+            const preview = emailIds.slice(0, 5).join('\n');
+            const more = emailIds.length > 5 ? `\n...等共 ${emailIds.length} 个邮箱` : '';
+            if (!confirm(`确定要删除以下 ${emailIds.length} 个邮箱吗？\n\n${preview}${more}\n\n删除后将同时清除这些邮箱已接收的邮件、公开分享和标签等关联数据，且不可恢复。`)) {
+                return;
+            }
+
+            const deleteBtn = document.getElementById('accountsBatchDeleteBtn');
+            if (deleteBtn) {
+                deleteBtn.disabled = true;
+                deleteBtn.innerHTML = buttonLabel('loading', '删除中...', 'spinning');
+            }
+
+            try {
+                const result = await apiRequest('/accounts/batch-delete', {
+                    method: 'POST',
+                    body: JSON.stringify({ email_ids: emailIds })
+                });
+
+                const deleted = Array.isArray(result.deleted) ? result.deleted : [];
+                deleted.forEach(emailId => selectedAccountIds.delete(emailId));
+                const failedEntries = Object.entries(result.failed || {});
+                if (failedEntries.length) {
+                    showNotification(`已删除 ${deleted.length} 个邮箱，${failedEntries.length} 个失败：${failedEntries.map(([id, reason]) => `${id}(${reason})`).join('、')}`, 'warning');
+                } else {
+                    showNotification(`已删除 ${deleted.length} 个邮箱及其关联邮件数据`, 'success');
+                }
+
+                await loadAccounts(accountsCurrentPage);
+            } catch (error) {
+                showNotification('批量删除失败: ' + error.message, 'error');
+            } finally {
+                if (deleteBtn) {
+                    deleteBtn.innerHTML = buttonLabel('delete', '批量删除');
+                }
+                updateAccountsActionButtons();
             }
         }
 
@@ -8830,9 +8905,15 @@ example3@outlook.com----password3----client_id3----refresh_token3"></textarea>
                 stopAllEmailSyncStatusPolling();
             }
 
+            if (pageName !== 'accounts') {
+                stopAccountHealthCheckPolling();
+            }
+
             if (pageName === 'accounts') {
                 loadClassifications().catch(error => console.warn('Unable to load classifications', error));
                 loadAccounts();
+                // 恢复后台健康检查状态，刷新页面后不遗漏“取消检查”按钮与进度
+                loadAccountHealthCheckStatus({ notifyOnComplete: false });
             } else if (pageName === 'allEmails') {
                 loadClassifications().then(() => {
                     // 填充分类/标签筛选下拉，保留当前已选值
@@ -9559,36 +9640,110 @@ example3@live.com----password3----client_id3----refresh_token3`;
 
         function hideAccountHealthProgress() {
             const bar = document.getElementById('accountHealthProgressBar');
-            if (accountHealthProgressPollTimer) {
-                clearTimeout(accountHealthProgressPollTimer);
-                accountHealthProgressPollTimer = null;
-            }
             if (!bar) return;
             bar.classList.add('hidden');
             setAccountHealthProgress(0);
         }
 
-        async function waitForAccountHealthCheck(taskId) {
-            while (true) {
-                const state = await apiRequest('/accounts/health-check');
-                if (taskId && state.task_id && state.task_id !== taskId && !state.running) {
-                    return state;
-                }
+        function isAccountsPageVisible() {
+            const page = document.getElementById('accountsPage');
+            return !!page && !page.classList.contains('hidden');
+        }
 
-                const total = Math.max(0, Number(state.total) || 0);
-                const checked = Math.max(0, Number(state.checked) || 0);
-                const percent = total > 0 ? (checked / total) * 100 : (state.running ? 8 : 100);
-                setAccountHealthProgress(percent);
-
-                if (!state.running) {
-                    setAccountHealthProgress(100);
-                    return state;
-                }
-
-                await new Promise(resolve => {
-                    accountHealthProgressPollTimer = window.setTimeout(resolve, 260);
-                });
+        function stopAccountHealthCheckPolling() {
+            if (accountHealthProgressPollTimer) {
+                clearTimeout(accountHealthProgressPollTimer);
+                accountHealthProgressPollTimer = null;
             }
+        }
+
+        function scheduleAccountHealthCheckPolling(delayMs = 1000) {
+            stopAccountHealthCheckPolling();
+            accountHealthProgressPollTimer = window.setTimeout(() => {
+                accountHealthProgressPollTimer = null;
+                loadAccountHealthCheckStatus();
+            }, delayMs);
+        }
+
+        // 后台检查进行中时，按钮切换为“取消检查”，用于终止后台任务
+        function setAccountHealthButtonState(running) {
+            const button = document.getElementById('accountHealthBtn');
+            if (!button) return;
+            button.disabled = false;
+            button.classList.toggle('btn-danger', !!running);
+            button.classList.toggle('btn-secondary', !running);
+            button.innerHTML = running
+                ? buttonLabel('error', '取消检查')
+                : buttonLabel('health', '检查账户健康');
+        }
+
+        function handleAccountHealthCheckState(state, options = {}) {
+            const { notifyOnComplete = true } = options;
+            const running = !!(state && state.running);
+            const total = Math.max(0, Number(state && state.total) || 0);
+            const checked = Math.max(0, Number(state && state.checked) || 0);
+
+            accountHealthCheckRunning = running;
+            setAccountHealthButtonState(running);
+
+            if (running) {
+                // 采用当前后台任务，刷新页面后也能继续跟踪同一个任务
+                accountHealthCheckActiveTaskId = (state && state.task_id) || accountHealthCheckActiveTaskId;
+                showAccountHealthProgress();
+                setAccountHealthProgress(total > 0 ? (checked / total) * 100 : 8);
+                if (isAccountsPageVisible()) {
+                    scheduleAccountHealthCheckPolling();
+                }
+                return;
+            }
+
+            stopAccountHealthCheckPolling();
+
+            const completedTrackedTask = state
+                && accountHealthCheckActiveTaskId
+                && state.task_id === accountHealthCheckActiveTaskId;
+
+            if (!completedTrackedTask) {
+                hideAccountHealthProgress();
+                return;
+            }
+
+            accountHealthCheckActiveTaskId = null;
+            setAccountHealthProgress(100);
+            window.setTimeout(() => hideAccountHealthProgress(), 220);
+
+            if (!notifyOnComplete) return;
+
+            if (state.error) {
+                showNotification('检查账户健康失败: ' + state.error, 'error');
+            } else if (state.cancelled) {
+                showNotification(`已取消检查，本次已完成 ${checked}/${total} 个账户`, 'warning');
+            } else {
+                showNotification(`账户健康检查完成，共检查 ${checked} 个账户`, 'success');
+            }
+            loadAccounts(accountsCurrentPage);
+        }
+
+        async function loadAccountHealthCheckStatus(options = {}) {
+            const { notifyOnComplete = true } = options;
+            try {
+                const state = await apiRequest('/accounts/health-check');
+                handleAccountHealthCheckState(state, { notifyOnComplete });
+            } catch (error) {
+                stopAccountHealthCheckPolling();
+                accountHealthCheckRunning = false;
+                setAccountHealthButtonState(false);
+                hideAccountHealthProgress();
+                showNotification('读取健康检查状态失败: ' + error.message, 'error');
+            }
+        }
+
+        // 按钮双态：未检查时启动后台任务，检查中时取消后台任务
+        function toggleAccountHealthCheck() {
+            if (accountHealthCheckRunning) {
+                return cancelAccountHealthCheck();
+            }
+            return refreshAccountHealth();
         }
 
         async function refreshAccountHealth() {
@@ -9596,23 +9751,40 @@ example3@live.com----password3----client_id3----refresh_token3`;
             if (!button) return;
 
             button.disabled = true;
-            button.innerHTML = buttonLabel('loading', '检查中...', 'spinning');
+            button.innerHTML = buttonLabel('loading', '启动中...', 'spinning');
             showAccountHealthProgress();
             setAccountHealthProgress(8);
 
             try {
                 const state = await apiRequest('/accounts/health-check', { method: 'POST' });
-                const result = await waitForAccountHealthCheck(state.task_id);
-                if (result.error) {
-                    throw new Error(result.error);
+                accountHealthCheckActiveTaskId = state.task_id || null;
+                handleAccountHealthCheckState(state, { notifyOnComplete: true });
+                if (!state.running) {
+                    showNotification('当前没有可检查的邮箱账户', 'info');
                 }
-                await loadAccounts(accountsCurrentPage);
             } catch (error) {
-                showNotification('检查账户健康失败: ' + error.message, 'error');
-            } finally {
-                window.setTimeout(() => hideAccountHealthProgress(), 220);
-                button.disabled = false;
-                button.innerHTML = buttonLabel('health', '检查账户健康');
+                accountHealthCheckRunning = false;
+                setAccountHealthButtonState(false);
+                hideAccountHealthProgress();
+                showNotification('启动健康检查失败: ' + error.message, 'error');
+            }
+        }
+
+        async function cancelAccountHealthCheck() {
+            const button = document.getElementById('accountHealthBtn');
+            if (button) {
+                button.disabled = true;
+                button.innerHTML = buttonLabel('loading', '取消中...', 'spinning');
+            }
+            stopAccountHealthCheckPolling();
+
+            try {
+                const state = await apiRequest('/accounts/health-check', { method: 'DELETE' });
+                handleAccountHealthCheckState(state, { notifyOnComplete: true });
+            } catch (error) {
+                setAccountHealthButtonState(accountHealthCheckRunning);
+                showNotification('取消健康检查失败: ' + error.message, 'error');
+                loadAccountHealthCheckStatus({ notifyOnComplete: false });
             }
         }
 
@@ -9689,10 +9861,12 @@ example3@live.com----password3----client_id3----refresh_token3`;
                 currentEmailDomainSearch = '';
                 currentTagSearch = '';
                 currentCategoryKeySearch = '';
+                currentHealthStatusSearch = '';
                 document.getElementById('accountEmailSearch').value = '';
                 document.getElementById('accountEmailDomainFilter').value = '';
                 document.getElementById('tagSearch').value = '';
                 document.getElementById('accountCategorySearch').value = '';
+                document.getElementById('accountHealthStatusFilter').value = '';
                 page = 1;
             }
 
@@ -13205,6 +13379,7 @@ Authorization: Bearer om_your_api_key
             currentEmailDomainSearch = document.getElementById('accountEmailDomainFilter').value.trim().toLowerCase();
             currentTagSearch = document.getElementById('tagSearch').value.trim();
             currentCategoryKeySearch = document.getElementById('accountCategorySearch').value.trim();
+            currentHealthStatusSearch = document.getElementById('accountHealthStatusFilter').value.trim();
             loadAccounts(1);
         }
 
@@ -13213,10 +13388,12 @@ Authorization: Bearer om_your_api_key
             document.getElementById('accountEmailDomainFilter').value = '';
             document.getElementById('tagSearch').value = '';
             document.getElementById('accountCategorySearch').value = '';
+            document.getElementById('accountHealthStatusFilter').value = '';
             currentEmailSearch = '';
             currentEmailDomainSearch = '';
             currentTagSearch = '';
             currentCategoryKeySearch = '';
+            currentHealthStatusSearch = '';
             loadAccounts(1);
         }
         
