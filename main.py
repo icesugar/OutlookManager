@@ -486,6 +486,8 @@ class SiteSettingsPayload(BaseModel):
     all_email_sqlite_sync_concurrency: int = Field(default=5, ge=1, le=50)
     all_email_sqlite_auto_sync_interval_minutes: int = Field(default=30, ge=1, le=1440)
     all_email_sqlite_retention_days: int = Field(default=30, ge=1, le=3650)
+    network_proxy_enabled: bool = Field(default=False)
+    network_proxy_url: Optional[str] = Field(default=None, max_length=512)
 
 # ============================================================================
 # IMAP连接池管理
@@ -2958,6 +2960,8 @@ def get_default_site_settings() -> dict[str, Any]:
         "all_email_sqlite_sync_concurrency": 5,
         "all_email_sqlite_auto_sync_interval_minutes": ALL_EMAIL_SQLITE_AUTO_SYNC_DEFAULT_INTERVAL_MINUTES,
         "all_email_sqlite_retention_days": ALL_EMAIL_SQLITE_RETENTION_DEFAULT_DAYS,
+        "network_proxy_enabled": False,
+        "network_proxy_url": "",
         "updated_at": None,
     }
 
@@ -3139,6 +3143,8 @@ def load_site_settings() -> dict[str, Any]:
                 1,
                 3650,
             ),
+            "network_proxy_enabled": bool(data.get("network_proxy_enabled", False)),
+            "network_proxy_url": str(data.get("network_proxy_url") or "").strip()[:512],
             "updated_at": data.get("updated_at"),
         }
 
@@ -3199,6 +3205,9 @@ def save_site_settings(settings: dict[str, Any]) -> dict[str, Any]:
             1,
             3650,
         ),
+        # 出站网络代理：enabled 为总开关，关闭时即使配置了地址也不生效
+        "network_proxy_enabled": bool(settings.get("network_proxy_enabled", False)),
+        "network_proxy_url": str(settings.get("network_proxy_url") or "").strip()[:512],
         "updated_at": datetime.utcnow().isoformat(),
     }
     if not payload["share_domain"]:
@@ -3215,6 +3224,14 @@ def save_site_settings(settings: dict[str, Any]) -> dict[str, Any]:
     with auth_lock:
         _write_json_file(SITE_SETTINGS_FILE, payload)
     return payload
+
+
+# 读取出站代理配置：enabled 开关关闭或地址为空时返回空字符串（表示直连）
+def get_network_proxy_url(settings: Optional[dict[str, Any]] = None) -> str:
+    source = settings if isinstance(settings, dict) and "network_proxy_url" in settings else load_site_settings()
+    if not source.get("network_proxy_enabled"):
+        return ""
+    return str(source.get("network_proxy_url") or "").strip()
 
 
 def get_admin_login_path(settings: Optional[dict[str, Any]] = None) -> str:
@@ -3360,7 +3377,8 @@ async def enforce_turnstile(request: Request, token: str | None, audience: str) 
         payload["remoteip"] = remote_ip
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        # 出站请求统一走站点设置中配置的代理（未配置则直连）
+        async with httpx.AsyncClient(timeout=10.0, proxy=get_network_proxy_url() or None) as client:
             response = await client.post(TURNSTILE_VERIFY_URL, data=payload)
             response.raise_for_status()
             verification = response.json()
@@ -4018,7 +4036,8 @@ async def get_access_token(credentials: AccountCredentials) -> str:
         ]
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        # 访问 login.microsoftonline.com 时使用站点设置中配置的出站代理
+        async with httpx.AsyncClient(timeout=30.0, proxy=get_network_proxy_url() or None) as client:
             last_error_response: httpx.Response | None = None
 
             for token_url in token_urls:
@@ -4096,7 +4115,8 @@ def extract_graph_error_detail(response: httpx.Response) -> str:
 
 async def graph_api_get(access_token: str, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        # 访问 graph.microsoft.com 时使用站点设置中配置的出站代理
+        async with httpx.AsyncClient(timeout=30.0, proxy=get_network_proxy_url() or None) as client:
             response = await client.get(
                 f"{GRAPH_API_BASE_URL}{path}",
                 headers=build_graph_headers(access_token),
@@ -4119,7 +4139,8 @@ async def graph_api_get(access_token: str, path: str, params: dict[str, Any] | N
 
 async def graph_api_patch(access_token: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        # 访问 graph.microsoft.com 时使用站点设置中配置的出站代理
+        async with httpx.AsyncClient(timeout=30.0, proxy=get_network_proxy_url() or None) as client:
             response = await client.patch(
                 f"{GRAPH_API_BASE_URL}{path}",
                 headers=build_graph_headers(access_token),
@@ -6031,7 +6052,8 @@ async def fetch_remote_domain_icon(domain: str, size: int) -> tuple[bytes | None
         "User-Agent": "Microsoft-Email-Manager/1.0",
         "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
     }
-    async with httpx.AsyncClient(timeout=8.0, follow_redirects=False, headers=headers) as client:
+    # 出站请求统一走站点设置中配置的代理（未配置则直连）
+    async with httpx.AsyncClient(timeout=8.0, follow_redirects=False, headers=headers, proxy=get_network_proxy_url() or None) as client:
         for url in sources:
             try:
                 response = await client.get(url)

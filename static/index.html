@@ -6774,6 +6774,23 @@ example3@outlook.com----password3----client_id3----refresh_token3"></textarea>
                                     <input type="number" id="siteSettingsAllEmailRetentionDays" class="form-input" min="1" max="3650" step="1" value="30" inputmode="numeric">
                                     <div class="public-share-help">默认 30 天。同步时只保留最近 N 天的邮件，更早的会从本地 SQLite 索引中裁剪。</div>
                                 </div>
+
+                            </div>
+
+                            <div class="api-key-panel">
+                                <h4 style="margin: 0 0 16px; color: #0f172a;">网络代理</h4>
+                                <div class="form-group">
+                                    <label class="public-share-inline">
+                                        <input type="checkbox" id="siteSettingsNetworkProxyEnabled">
+                                        <span>启用出站代理</span>
+                                    </label>
+                                    <div class="public-share-help">默认关闭。开启后所有出站 HTTP 请求才会走下方代理地址；关闭后立即恢复直连。</div>
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label" for="siteSettingsNetworkProxyUrl">出站代理地址</label>
+                                    <input type="text" id="siteSettingsNetworkProxyUrl" class="form-input" placeholder="http://127.0.0.1:7890 或 socks5://user:pass@host:port">
+                                    <div class="public-share-help">开启开关后，服务端所有出站 HTTP 请求（微软 OAuth/Graph、Turnstile 验证、图标抓取等）都会走该代理。支持 http / https / socks5。保存后立即生效，无需重启。IMAP 连接不走此代理。</div>
+                                </div>
                                 <div class="api-docs-auth-box">
                                     <p class="api-description" style="margin-bottom: 10px;">手动触发说明</p>
                                     <p class="text-sm" style="color: #475569; line-height: 1.7;">
@@ -11601,6 +11618,8 @@ Authorization: Bearer om_your_api_key
                 document.getElementById('siteSettingsAllEmailSyncConcurrency').value = String(config.all_email_sqlite_sync_concurrency || 5);
                 document.getElementById('siteSettingsAllEmailAutoSyncIntervalMinutes').value = String(config.all_email_sqlite_auto_sync_interval_minutes || 30);
                 document.getElementById('siteSettingsAllEmailRetentionDays').value = String(config.all_email_sqlite_retention_days || 30);
+                document.getElementById('siteSettingsNetworkProxyEnabled').checked = !!config.network_proxy_enabled;
+                document.getElementById('siteSettingsNetworkProxyUrl').value = config.network_proxy_url || '';
                 toggleShareDomainSettings();
                 renderSiteSettingsStatus(config);
                 if (showReloadMessage) {
@@ -11632,6 +11651,16 @@ Authorization: Bearer om_your_api_key
             const allEmailSyncConcurrency = Number.parseInt(document.getElementById('siteSettingsAllEmailSyncConcurrency').value, 10);
             const allEmailAutoSyncIntervalMinutes = Number.parseInt(document.getElementById('siteSettingsAllEmailAutoSyncIntervalMinutes').value, 10);
             const allEmailRetentionDays = Number.parseInt(document.getElementById('siteSettingsAllEmailRetentionDays').value, 10);
+            const networkProxyEnabled = document.getElementById('siteSettingsNetworkProxyEnabled').checked;
+            const networkProxyUrl = document.getElementById('siteSettingsNetworkProxyUrl').value.trim();
+            if (networkProxyEnabled && !networkProxyUrl) {
+                showNotification('启用出站代理后必须填写代理地址', 'warning');
+                return;
+            }
+            if (networkProxyUrl && !/^(https?|socks5):\/\//i.test(networkProxyUrl)) {
+                showNotification('出站代理地址需以 http://、https:// 或 socks5:// 开头', 'warning');
+                return;
+            }
             const previousAdminPath = getAdminBasePath();
 
             if (!homeTitle) {
@@ -11697,7 +11726,9 @@ Authorization: Bearer om_your_api_key
                         all_email_sqlite_auto_sync_enabled: allEmailAutoSyncEnabled,
                         all_email_sqlite_sync_concurrency: allEmailSyncConcurrency,
                         all_email_sqlite_auto_sync_interval_minutes: allEmailAutoSyncIntervalMinutes,
-                        all_email_sqlite_retention_days: allEmailRetentionDays
+                        all_email_sqlite_retention_days: allEmailRetentionDays,
+                        network_proxy_enabled: networkProxyEnabled,
+                        network_proxy_url: networkProxyUrl
                     })
                 });
 
@@ -11717,6 +11748,8 @@ Authorization: Bearer om_your_api_key
                 document.getElementById('siteSettingsAllEmailSyncConcurrency').value = String(config.all_email_sqlite_sync_concurrency || 5);
                 document.getElementById('siteSettingsAllEmailAutoSyncIntervalMinutes').value = String(config.all_email_sqlite_auto_sync_interval_minutes || 30);
                 document.getElementById('siteSettingsAllEmailRetentionDays').value = String(config.all_email_sqlite_retention_days || 30);
+                document.getElementById('siteSettingsNetworkProxyEnabled').checked = !!config.network_proxy_enabled;
+                document.getElementById('siteSettingsNetworkProxyUrl').value = config.network_proxy_url || '';
                 toggleShareDomainSettings();
                 renderSiteSettingsStatus(config, '设置已保存，主页介绍、后台入口、公开分享域名、Turnstile 和全部邮件同步配置都已更新。');
                 showNotification('站点设置已保存', 'success');
